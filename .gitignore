@@ -1,0 +1,23 @@
+# Rust build artefacts
+/target/
+
+# COBOL built executables (создаются `make cobol`)
+/cobol/world
+/cobol/simulate
+
+# Игровое состояние (создаётся в рантайме, не часть исходников)
+/cobol/*.dat
+/saves/
+
+# OS / редакторы
+.DS_Store
+*.swp
+*~
+
+# IDE
+.idea/
+.vscode/
+
+# Локальные настройки Claude Code (личные разрешения, additionalDirectories)
+.claude/settings.local.json
+.claude/local/
