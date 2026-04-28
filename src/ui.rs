@@ -129,7 +129,19 @@ fn is_collapsed(mode: &str) -> bool {
     mode.trim() == "COLLAPSED"
 }
 
-/// Цвет эпохи — визуально отличает 8 ступеней лестницы.
+/// Phase 24 / Этап 2A — окончательно вымершая полития.
+fn is_extinct(mode: &str) -> bool {
+    mode.trim() == "EXTINCT"
+}
+
+/// Полития исключена из активной симуляции (COLLAPSED — временно,
+/// EXTINCT — навсегда). Соответствует COBOL-условию `POLITY-DORMANT`.
+#[allow(dead_code)]
+fn is_dormant(mode: &str) -> bool {
+    is_collapsed(mode) || is_extinct(mode)
+}
+
+/// Цвет эпохи — визуально отличает 8 ступеней лестницы + два «бездействующих».
 fn mode_color(mode: &str) -> Color {
     match mode.trim() {
         "PRIMITIVE"      => Color::DarkGray,
@@ -141,6 +153,7 @@ fn mode_color(mode: &str) -> Color {
         "IMPERIAL"       => Color::LightMagenta,
         "SOCIALIST"      => Color::Red,        // Phase 15: yes, красный
         "COLLAPSED"      => Color::DarkGray,
+        "EXTINCT"        => Color::DarkGray,   // Phase 24 / Этап 2A
         _                => Color::Gray,
     }
 }
@@ -496,7 +509,18 @@ pub fn run() -> io::Result<()> {
                 .iter()
                 .zip(polities.iter())
                 .map(|(r, p)| {
-                    if is_collapsed(&p.prod_mode) {
+                    if is_extinct(&p.prod_mode) {
+                        // Phase 24 / Этап 2A: полития окончательно вымерла.
+                        // Регион остаётся на карте (терраин/имя) — но без хозяина.
+                        Row::new([
+                            Cell::from(r.name.clone()),
+                            Cell::from(r.terrain.clone()),
+                            Cell::from("       —"),
+                            Cell::from("  —"),
+                            Cell::from("✗ EXTINCT"),
+                            Cell::from("EXTINCT"),
+                        ]).style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM))
+                    } else if is_collapsed(&p.prod_mode) {
                         Row::new([
                             Cell::from(r.name.clone()),
                             Cell::from(r.terrain.clone()),
@@ -546,9 +570,44 @@ pub fn run() -> io::Result<()> {
             // Phase 24 — Этап 1: иерархия Region (геофон) → Polity (политика).
             // На Этапе 1 имена синхронизированы; разделитель «Region: X / Polity: Y»
             // готов к будущему расхождению на Этапе 2+.
+            // Phase 24 / Этап 2A: для EXTINCT региона показываем «без хозяина»
+            // в укороченном виде — у него нет правителя, классов, культуры.
             let detail_lines = if let (Some(r), Some(p)) =
                 (regions.get(selected), polities.get(selected))
             {
+                if is_extinct(&p.prod_mode) {
+                    vec![
+                        Line::from(vec![
+                            Span::styled("Region: ", Style::default().fg(Color::DarkGray)),
+                            Span::styled(
+                                r.name.clone(),
+                                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                format!("  {} {}", r.terrain.trim(), r.climate.trim()),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ]),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "✗ EXTINCT",
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from(Span::styled(
+                            "Polity has ceased to exist.",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                        Line::from(Span::styled(
+                            "Population scattered.",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            format!("Good (untended): {}", r.primary_good.trim()),
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                    ]
+                } else {
                 let tcol = tension_color(p.class_tension);
                 let war_line = if p.at_war_with == 0 {
                     Line::from(Span::styled("Peace", Style::default().fg(Color::Green)))
@@ -711,6 +770,7 @@ pub fn run() -> io::Result<()> {
                 ]));
 
                 lines
+                } // конец живой ветки (else после is_extinct)
             } else {
                 vec![]
             };
@@ -1292,7 +1352,9 @@ fn render_dashboard(
         "PROTO-INDUSTRL",
         "INDUSTRIAL",
         "IMPERIAL",
+        "SOCIALIST",
         "COLLAPSED",
+        "EXTINCT", // Phase 24 / Этап 2A
     ];
 
     // Most warlike (highest war_year), most rebellious (highest tension), oldest ruler.
@@ -1300,17 +1362,17 @@ fn render_dashboard(
     let warlike: Option<(usize, &Polity)> = polities
         .iter()
         .enumerate()
-        .filter(|(_, p)| !is_collapsed(&p.prod_mode))
+        .filter(|(_, p)| !is_dormant(&p.prod_mode))
         .max_by_key(|(_, p)| p.war_year);
     let rebel: Option<(usize, &Polity)> = polities
         .iter()
         .enumerate()
-        .filter(|(_, p)| !is_collapsed(&p.prod_mode))
+        .filter(|(_, p)| !is_dormant(&p.prod_mode))
         .max_by_key(|(_, p)| p.class_tension);
     let oldest_ruler: Option<(usize, &Polity)> = polities
         .iter()
         .enumerate()
-        .filter(|(_, p)| !is_collapsed(&p.prod_mode))
+        .filter(|(_, p)| !is_dormant(&p.prod_mode))
         .max_by_key(|(_, p)| p.ruler_age);
 
     let mut lines: Vec<Line> = vec![

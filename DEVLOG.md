@@ -1,4 +1,113 @@
 
+## [Phase 24 / Этап 2A — EXTINCT для малых политий] 2026-04-28
+
+### Зачем
+
+Этап 1 разделил Region/Polity, но все коллапсы по-прежнему шли в `COLLAPSED → REBIRTH через 8 ходов`. Государство «не могло пропасть» — карта мира навсегда фиксированная. Это было дальше от истории чем хотелось: в реальности страны вымирают, поглощаются соседями, исчезают навсегда (Урарту, Карфаген, Византия — все ушли).
+
+Этап 2A добавляет третье состояние политии — **EXTINCT** (окончательно вымершая). Без расширения количества слотов, без spawn'а наследников. Минимальная конфигурация которая даёт визуальный эффект «карта мира редеет».
+
+### Что сделано
+
+**A. Структура состояний:**
+- ALIVE — обычная (любой PROD-MODE кроме COLLAPSED/EXTINCT)
+- COLLAPSED — тёмные века; через `REBIRTH-DURATION = 8` ходов восстанавливается как FEUDAL
+- **EXTINCT** (новое) — окончательно вымершая; не возрождается, слот остаётся в массиве как «пустая территория»
+
+**B. Хранение:** новое значение `WS-MODE-EXTINCT VALUE "EXTINCT        "` в существующем `WS-PROD-MODE`. Никаких новых байт в структуре. 88-level conditions:
+```cobol
+05 WS-PROD-MODE PIC X(15).
+   88 POLITY-COLLAPSED VALUE "COLLAPSED      ".
+   88 POLITY-EXTINCT   VALUE "EXTINCT        ".
+   88 POLITY-DORMANT   VALUES "COLLAPSED      ", "EXTINCT        ".
+```
+Это позволяет писать `IF NOT POLITY-DORMANT(WS-IDX)` — лаконичный фильтр для активной политии.
+
+**C. Триггер EXTINCT vs COLLAPSED** — в `COLLAPSE-ONE` после миграции беженцев:
+```
+IF pop < EXTINCT-POP-THRESHOLD (= 30000)
+    → EXTINCT (демографический коллапс необратим)
+ELSE
+    → COLLAPSED (экономический коллапс — есть надежда восстать)
+```
+30k взято после стресс-теста: 80k был слишком высокий, 100% коллапсов сразу шли в EXTINCT и REBIRTH-ветка была мёртвой. 30k оставляет «коридор» для тёмных веков.
+
+**D. Что делает EXTINCT:**
+- mode = EXTINCT, pop = 0, labour = 0, capital = 0, collapse_timer = 0
+- Беженцы 30% pop успели уйти соседям (общая часть COLLAPSE-ONE)
+- Остальные 70% растворяются в общинах соседей или вымирают
+- Хроника: `EXTINCT  Polity ceases to exist. Region falls silent.`
+
+**E. Фильтры в *-ALL параграфах:** все 12 циклов `IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED` заменены на `IF NOT POLITY-DORMANT(WS-IDX)` (исключают и COLLAPSED, и EXTINCT). Затронуты: PRODUCE-ALL, MARKET-AGGREGATE, TRADE-ALL, WAR-CHECK-ALL, SOCIAL-ALL, CLASS-DRIFT-ALL, ACCUMULATE-ALL, TECH-RESEARCH-ALL, CULTURE-DRIFT-ALL, INNOVATION-CHECK-ALL, AGE-RULERS, CALC-MILITARY, RELATIONS-DECAY, CLAMP-ALL-TENSIONS, TICK-MODE-YEARS, CONSCIOUSNESS-ALL.
+
+**F. Neighbor-фильтры:** все 8 проверок `WS-PROD-MODE(WS-NBREG) NOT = WS-MODE-COLLAPSED` заменены на `NOT POLITY-DORMANT(WS-NBREG)`. EXTINCT-сосед не получает беженцев, не вызывает торговлю, не цель войны, не источник CONSCIOUSNESS-CONTAGION.
+
+**G. DEMOGRAPHY-ALL ветка для COLLAPSED:** раньше там увеличивался `COLLAPSE-TIMER`. Теперь:
+```
+IF NOT POLITY-EXTINCT(WS-IDX)        -- EXTINCT — ничего, слот мёртв
+    IF POLITY-COLLAPSED(WS-IDX)
+        ADD 1 TO WS-COLLAPSE-TIMER
+    ELSE
+        -- обычная демография
+```
+
+**H. Rust UI** (`src/ui.rs`):
+- `fn is_extinct(mode)` + `fn is_dormant(mode)` хелперы
+- `mode_color`: EXTINCT → DarkGray (как COLLAPSED)
+- Таблица регионов: extinct row показывается серым с пометкой `✗ EXTINCT`, поле населения и tension — `—`
+- Detail panel: для EXTINCT региона укороченный вид «Region: X / ✗ EXTINCT / Polity has ceased to exist. Population scattered.»
+- Dashboard: фильтр `is_dormant` (не `is_collapsed`) для «Most warlike/rebellious/oldest ruler» — мёртвые политии исключаются. Era distribution получил SOCIALIST и EXTINCT в порядок отображения.
+
+### Стресс-тест 1500 ходов (с порогом 30k)
+
+```
+EXTINCT:    6        (за 1500 ходов 6 политий ушли навсегда)
+COLLAPSE:   86
+REBIRTH:    83       (тёмные века с восстановлением — главный путь)
+REVOLUTION: 17
+MODE-SHIFT: 12
+WAR-START:  334
+```
+
+End-state на год 1500 (драматичная история циклов цивилизаций):
+- Embervast — FEUDAL 25y (молодая, единственная живая после нескольких COLLAPSE→REBIRTH)
+- Ashvale, Goldgate, Cinderkeep — COLLAPSED (в тёмных веках, восстанут через ~6 ходов)
+- Ironmarch, Stonehold, Frostfen, Duskveil, Thornwall, Saltmere — **EXTINCT** (исчезли в годах 40-308)
+
+Сравнение порогов:
+
+| Порог | EXTINCT | COLLAPSE | REBIRTH |
+|---|---|---|---|
+| 80k (первая попытка) | 6 | **0** | **0** |
+| 30k (финал) | 6 | 86 | 83 |
+
+С 80k EXTINCT-ветка съедала все коллапсы; с 30k обе ветки живы и дополняют друг друга.
+
+### Какие файлы затронуты
+
+- `cobol/simulate.cob` — `WS-MODE-EXTINCT` константа, 88-level conditions, разветвление `COLLAPSE-ONE`, 12 *-ALL фильтров, 8 neighbor-фильтров, DEMOGRAPHY-ALL переписан с двумя ветками; константа `EXTINCT-POP-THRESHOLD = 30000`
+- `src/ui.rs` — `is_extinct`, `is_dormant`, рендер EXTINCT-row в таблице, укороченный detail для EXTINCT, Dashboard фильтр + EXTINCT/SOCIALIST в era order
+- `cobol/baseline_chronicle.dat` и др. — новый baseline (старый из Этапа 1 устарел т.к. поведение изменилось)
+
+### Регрессия
+
+Новый baseline зафиксирован после Этапа 2A. `scripts/baseline.sh check` зелёный (детерминированность сохраняется при фиксированной последовательности RANDOM-вызовов).
+
+### Что не делалось (Этапы 2B/2C)
+
+- Расширение слотов до 30 (3 ячейки на регион) — сейчас 1 полития на регион
+- Spawn наследников при распаде большой политии — пустая ячейка остаётся пустой
+- STATELESS как mode (беженцы не оседают как ядро новой политии)
+- Аннексия ячейки в WAR-VICTORY (война пока работает как раньше)
+
+После Этапа 2A карта может полностью опустеть к концу долгой истории — это known. Этап 2B (spawn) ответит на вопрос «откуда берутся новые государства».
+
+### Замечания / возможные тюны
+
+- К году 1500 уже 6 EXTINCT (60% мира). Если хочется чтобы мир жил дольше без новых политий — поднять `EXTINCT-POP-THRESHOLD` до 10-20k или ослабить агрессию войны/беженцев. Но это палка о двух концах: если порог слишком низкий, EXTINCT почти никогда не срабатывает.
+- 0 COLLAPSE/REBIRTH было при 80k — это указывает что в текущем балансе войны+миграции pop падает быстрее capital. На Этапе 2B (когда добавим spawn) это можно будет компенсировать новыми политиями взамен EXTINCT.
+- Все ранние EXTINCT (годы 30-308) случились в первые 1/5 истории. Возможно стоит ввести «грейс-период» для молодых политий (`mode_years < N` immune to EXTINCT). Это эстетический тюн, оставлен на будущее.
+
 ## [Phase 24 / Этап 1 — Region/Polity split (рефакторинг без новой логики)] 2026-04-28
 
 ### Зачем

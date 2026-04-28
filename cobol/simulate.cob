@@ -345,6 +345,20 @@ WORKING-STORAGE SECTION.
 01 WS-MODE-IMPERIAL    PIC X(15) VALUE "IMPERIAL       ".
 01 WS-MODE-SOCIALIST   PIC X(15) VALUE "SOCIALIST      ".
 01 WS-MODE-COLLAPSED   PIC X(15) VALUE "COLLAPSED      ".
+*> Phase 24 / Этап 2A — окончательно вымершая полития. Слот остаётся в
+*> массиве, но не участвует в симуляции. От COLLAPSED отличается тем,
+*> что не возрождается через REBIRTH-DURATION.
+01 WS-MODE-EXTINCT     PIC X(15) VALUE "EXTINCT        ".
+
+*> Phase 24 / Этап 2A — порог разделения путей коллапса.
+*> Стресс-тест 1500 ходов с порогом=80k показал: 100% коллапсов идут
+*> в EXTINCT, REBIRTH-ветка мертва. Коридор «есть надежда» нужен.
+*> Понижено до 30k — это реально вымершее общество (одна-две деревни).
+*> Регион на 50k pop ещё может пережить тёмные века и восстать как FEUDAL.
+*>   pop < 30k                            → EXTINCT (навсегда)
+*>   pop ≥ 30k ∧ collapse-trigger сработал → COLLAPSED → REBIRTH
+*> Демографический коллапс реально необратим только на критическом дне.
+78 EXTINCT-POP-THRESHOLD    VALUE 30000.
 01 WS-WAR-PEACE        PIC X(10) VALUE "PEACE     ".
 01 WS-WAR-DYNASTIC     PIC X(10) VALUE "DYNASTIC  ".
 01 WS-WAR-CRISIS       PIC X(10) VALUE "CRISIS    ".
@@ -437,6 +451,13 @@ WORKING-STORAGE SECTION.
    05 WS-NOBILITY-PCT      PIC 9(3).
    05 WS-CLERGY-PCT        PIC 9(3).
    05 WS-PROD-MODE         PIC X(15).
+*>     Phase 24 / Этап 2A — флаги «бездействующих» политий. Все *-ALL
+*>     параграфы используют `IF NOT POLITY-DORMANT(WS-IDX)` чтобы
+*>     не процессить ни COLLAPSED (временно мертва), ни EXTINCT
+*>     (навсегда). 88-level применяется к субскрипт-индексу.
+      88 POLITY-COLLAPSED VALUE "COLLAPSED      ".
+      88 POLITY-EXTINCT   VALUE "EXTINCT        ".
+      88 POLITY-DORMANT   VALUES "COLLAPSED      ", "EXTINCT        ".
    05 WS-LABOUR-HOURS      PIC 9(10).
    05 WS-OUTPUT-VALUE      PIC 9(10)V99.
    05 WS-SURPLUS-RATE      PIC 9(3)V99.
@@ -801,7 +822,7 @@ PRODUCE-ALL.
 *> Производительность выводится из способа производства (на лету, не хранится).
 *> Phase 11 — 7 эпох: PRIMITIVE/SLAVE/FEUDAL/MERCANTILE/PROTO-IND/INDUSTRIAL/IMPERIAL.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
             EVALUATE WS-PROD-MODE(WS-IDX)
                 WHEN WS-MODE-PRIMITIVE
                     COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
@@ -1003,7 +1024,7 @@ CONSCIOUSNESS-ALL.
 *>  • заражение от соседей слабее (+1 вместо +3) и требует своей основы.
 *> COLLAPSED регионы пропускаем — у них преемственность сломана.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
 *>          Структурное условие: без рабочего класса (artisans+merchants
 *>          ≥ CONSCIOUSNESS-URBAN-MIN) сознание не накапливается.
 *>          В крестьянских империях оно остаётся на нуле.
@@ -1091,7 +1112,7 @@ CLASS-DRIFT-ALL.
 *> религиозное возрождение, рурализация в голод.
 *> Каждый — 1 пп при срабатывании, общая сумма классов сохраняется.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
             PERFORM DRIFT-URBANIZATION
             PERFORM DRIFT-COMMERCE
             PERFORM DRIFT-DECLINE
@@ -1226,7 +1247,7 @@ WAR-CHECK-ALL.
 *> Шаг 4: проверка триггеров всех типов войн
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
         IF WS-AT-WAR-WITH(WS-IDX) = 0
-           AND WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+           AND NOT POLITY-DORMANT(WS-IDX)
             PERFORM CLASS-WAR-CHECK
             PERFORM DYNASTIC-WAR-CHECK
             PERFORM CRISIS-WAR-CHECK
@@ -1299,7 +1320,7 @@ DYNASTIC-WAR-NEIGHBOR.
     END-EVALUATE
     IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
        AND WS-AT-WAR-WITH(WS-NBREG) = 0
-       AND WS-PROD-MODE(WS-NBREG) NOT = WS-MODE-COLLAPSED
+       AND NOT POLITY-DORMANT(WS-NBREG)
 *>      Альянс полностью блокирует атаку (relation > +60).
 *>      Иначе базовая вероятность биасится отношениями: вражда +%, дружба -%.
         IF WS-REL-ROW(WS-IDX, WS-NBREG)
@@ -1370,7 +1391,7 @@ CRISIS-WAR-FIND-TARGET.
     END-EVALUATE
     IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
        AND WS-AT-WAR-WITH(WS-NBREG) = 0
-       AND WS-PROD-MODE(WS-NBREG) NOT = WS-MODE-COLLAPSED
+       AND NOT POLITY-DORMANT(WS-NBREG)
         COMPUTE WS-PROB-PERMIL = CRISIS-WAR-BASE-PERMIL
             * WS-CLASS-TENSION(WS-IDX) / 100
         MOVE "CRISIS-WAR    " TO WS-DEBUG-LABEL
@@ -1436,7 +1457,7 @@ IMPERIAL-WAR-TARGET.
     END-EVALUATE
     IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
        AND WS-AT-WAR-WITH(WS-NBREG) = 0
-       AND WS-PROD-MODE(WS-NBREG) NOT = WS-MODE-COLLAPSED
+       AND NOT POLITY-DORMANT(WS-NBREG)
        AND WS-REL-ROW(WS-IDX, WS-NBREG) <= RELATIONS-ALLIANCE
 *>      Cap deficit при расчёте вероятности — иначе IMPERIAL-WAR-BASE * deficit
 *>      может переполниться при больших дефицитах (миллионы).
@@ -1709,27 +1730,54 @@ COLLAPSE-CHECK.
 COLLAPSE-ONE.
 *> Параметризуется через WS-COLLAPSE-CANDIDATE.
 *> Phase 10: перед сбросом популяции — миграция беженцев к соседям (30%).
-    IF WS-PROD-MODE(WS-COLLAPSE-CANDIDATE) NOT = WS-MODE-COLLAPSED
+*>
+*> Phase 24 / Этап 2A — путь коллапса теперь раздваивается:
+*>   pop < EXTINCT-POP-THRESHOLD на момент извинения → EXTINCT (навсегда).
+*>     Демографический коллапс: некому переждать тёмные века.
+*>   pop ≥ THRESHOLD ∧ capital < COLLAPSE-CAPITAL-FLOOR → COLLAPSED → REBIRTH.
+*>     Экономический коллапс: люди живы, государство восстанет.
+*>
+*> Условие триггера осталось прежним: capital < CAP-FLOOR OR pop < POP-FLOOR.
+*> POLITY-DORMANT гард (88-level) гарантирует idempotence — не коллапсируем
+*> уже COLLAPSED или EXTINCT.
+    IF NOT POLITY-DORMANT(WS-COLLAPSE-CANDIDATE)
        AND (WS-CAPITAL-STOCK(WS-COLLAPSE-CANDIDATE) < COLLAPSE-CAPITAL-FLOOR
             OR WS-POPULATION(WS-COLLAPSE-CANDIDATE) < COLLAPSE-POP-FLOOR)
-*>      Беженцы: 30% оставшегося населения распределяются по живым соседям.
+*>      Беженцы (общая часть для обоих путей): 30% pop → соседям.
         COMPUTE WS-MIGRATION-POOL =
             WS-POPULATION(WS-COLLAPSE-CANDIDATE) * MIGRATION-COLLAPSE-PCT
             / 100
         PERFORM DISTRIBUTE-REFUGEES
-        MOVE WS-MODE-COLLAPSED TO WS-PROD-MODE(WS-COLLAPSE-CANDIDATE)
+*>      Сброс общих полей (нужен для обоих путей)
         MOVE 0                 TO WS-MODE-YEARS(WS-COLLAPSE-CANDIDATE)
-        MOVE COLLAPSED-POP     TO WS-POPULATION(WS-COLLAPSE-CANDIDATE)
-        MOVE COLLAPSED-LABOUR  TO WS-LABOUR-HOURS(WS-COLLAPSE-CANDIDATE)
         MOVE 0                 TO WS-CAPITAL-STOCK(WS-COLLAPSE-CANDIDATE)
-        MOVE 1                 TO WS-COLLAPSE-TIMER(WS-COLLAPSE-CANDIDATE)
         MOVE 0                 TO WS-CLASS-TENSION(WS-COLLAPSE-CANDIDATE)
         MOVE 0                 TO WS-NOBILITY-PCT(WS-COLLAPSE-CANDIDATE)
         MOVE 0                 TO WS-MILITARY-STRENGTH(WS-COLLAPSE-CANDIDATE)
         MOVE WS-YEAR           TO WS-CHRON-YEAR
-        MOVE "COLLAPSE       " TO WS-CHRON-TYPE
         MOVE WS-NAME(WS-COLLAPSE-CANDIDATE) TO WS-CHRON-RGON
-        MOVE "State collapses. Dark age begins." TO WS-CHRON-DESC
+        IF WS-POPULATION(WS-COLLAPSE-CANDIDATE) < EXTINCT-POP-THRESHOLD
+*>          EXTINCT-путь: население ниже порога — государство и народ
+*>          исчезают окончательно. 30% уже ушли беженцами; остальные
+*>          растворяются в общинах соседей или вымирают. На карте
+*>          остаётся пустая территория.
+            MOVE WS-MODE-EXTINCT  TO WS-PROD-MODE(WS-COLLAPSE-CANDIDATE)
+            MOVE 0                TO WS-POPULATION(WS-COLLAPSE-CANDIDATE)
+            MOVE 0                TO WS-LABOUR-HOURS(WS-COLLAPSE-CANDIDATE)
+            MOVE 0                TO WS-COLLAPSE-TIMER(WS-COLLAPSE-CANDIDATE)
+            MOVE "EXTINCT        " TO WS-CHRON-TYPE
+            MOVE "Polity ceases to exist. Region falls silent."
+                TO WS-CHRON-DESC
+        ELSE
+*>          COLLAPSED-путь (старое поведение): тёмные века, через
+*>          REBIRTH-DURATION ходов восстаёт как FEUDAL.
+            MOVE WS-MODE-COLLAPSED TO WS-PROD-MODE(WS-COLLAPSE-CANDIDATE)
+            MOVE COLLAPSED-POP     TO WS-POPULATION(WS-COLLAPSE-CANDIDATE)
+            MOVE COLLAPSED-LABOUR  TO WS-LABOUR-HOURS(WS-COLLAPSE-CANDIDATE)
+            MOVE 1                 TO WS-COLLAPSE-TIMER(WS-COLLAPSE-CANDIDATE)
+            MOVE "COLLAPSE       " TO WS-CHRON-TYPE
+            MOVE "State collapses. Dark age begins." TO WS-CHRON-DESC
+        END-IF
         PERFORM WRITE-CHRONICLE
     END-IF.
 
@@ -1752,7 +1800,7 @@ REFUGEE-COUNT-NB.
         WHEN 3 MOVE WS-NEIGHBOR-3(WS-COLLAPSE-CANDIDATE) TO WS-NBREG
     END-EVALUATE
     IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
-       AND WS-PROD-MODE(WS-NBREG) NOT = WS-MODE-COLLAPSED
+       AND NOT POLITY-DORMANT(WS-NBREG)
         ADD 1 TO WS-LIVING-NEIGHBORS
     END-IF.
 
@@ -1763,7 +1811,7 @@ REFUGEE-ABSORB-NB.
         WHEN 3 MOVE WS-NEIGHBOR-3(WS-COLLAPSE-CANDIDATE) TO WS-NBREG
     END-EVALUATE
     IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
-       AND WS-PROD-MODE(WS-NBREG) NOT = WS-MODE-COLLAPSED
+       AND NOT POLITY-DORMANT(WS-NBREG)
         ADD WS-REFUGEE-SHARE TO WS-POPULATION(WS-NBREG)
         ADD MIGRATION-TENSION-DELTA TO WS-CLASS-TENSION(WS-NBREG)
         MOVE WS-NBREG TO WS-CLAMP-IDX
@@ -1783,7 +1831,7 @@ DISTRIBUTE-ALL.
 *> Шаг 6: распределение — степень голода (0=ok, 1=mild, 2=severe).
 *> Бинарного "famine flag" больше нет — серьёзность зависит от глубины дефицита.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
             COMPUTE WS-WORKERS = WS-POPULATION(WS-IDX)
                 * (WS-PEASANTS-PCT(WS-IDX) + WS-ARTISANS-PCT(WS-IDX)) / 100
             COMPUTE WS-SUBSIST-NEED = WS-WORKERS * SUBSIST-PER-WORKER
@@ -1810,9 +1858,14 @@ DISTRIBUTE-ALL.
     END-PERFORM.
 
 DEMOGRAPHY-ALL.
-*> Рост: +1.5%/ход норма, -2% мягкий голод, -8% острый, COLLAPSED — таймер возрождения.
+*> Рост: +1.5%/ход норма, -2% мягкий голод, -8% острый.
+*> COLLAPSED — таймер возрождения (через REBIRTH-DURATION ходов оживёт).
+*> EXTINCT — ничего: слот мёртв, ни таймера, ни демографии.
+*> Phase 24 / Этап 2A: EXTINCT-фильтр на верхнем уровне; внутренний
+*> IF/ELSE для COLLAPSED-таймера vs обычной демографии.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) = WS-MODE-COLLAPSED
+        IF NOT POLITY-EXTINCT(WS-IDX)
+        IF POLITY-COLLAPSED(WS-IDX)
             ADD 1 TO WS-COLLAPSE-TIMER(WS-IDX)
         ELSE
             EVALUATE WS-HUNGER-FLAGS(WS-IDX)
@@ -1832,13 +1885,14 @@ DEMOGRAPHY-ALL.
             COMPUTE WS-LABOUR-HOURS(WS-IDX) =
                 WS-POPULATION(WS-IDX) * LABOUR-PER-CAPITA
         END-IF
+        END-IF
     END-PERFORM.
 
 SOCIAL-ALL.
 *> Шаг 7: классовое напряжение = эксплуатация − легитимация.
 *> Равновесие при surplus=15%: DELTA ≈ 0. Выше → напряжение растёт.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
             COMPUTE WS-TENSION-DELTA =
                 (WS-SURPLUS-RATE(WS-IDX) - SURPLUS-EQUILIBRIUM)
                     / SURPLUS-DELTA-DIVISOR
@@ -2429,7 +2483,7 @@ TICK-MODE-YEARS.
 *> растёт на 1. COLLAPSED не считает — у них «нет эпохи» в обычном смысле,
 *> восстановление через REBIRTH сбросит счётчик в 0 заново.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
             ADD 1 TO WS-MODE-YEARS(WS-IDX)
         END-IF
     END-PERFORM.
@@ -2438,7 +2492,7 @@ AGE-RULERS.
 *> Каждый ход: правитель стареет на 1, продолжительность правления +1.
 *> На age >= 50 — нарастающая вероятность смерти. После 70 — резко выше.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
             ADD 1 TO WS-RULER-AGE(WS-IDX)
             ADD 1 TO WS-RULER-REIGN(WS-IDX)
             EVALUATE TRUE
@@ -2648,7 +2702,7 @@ TECH-RESEARCH-ALL.
 *> COLLAPSED регионы пропускаем — наука разрушена.
 *> Когда progress >= 100, level++, progress сбрасывается, тех «изучен».
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
             PERFORM VARYING WS-BIDX FROM 1 BY 1
                     UNTIL WS-BIDX > TECH-BRANCH-COUNT
                 IF WS-TECH-LEVEL(WS-IDX, WS-BIDX) < TECH-MAX-LEVEL
@@ -2790,7 +2844,7 @@ TECH-DIFFUSION-NB.
         WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
     END-EVALUATE
     IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
-       AND WS-PROD-MODE(WS-NBREG) NOT = WS-MODE-COLLAPSED
+       AND NOT POLITY-DORMANT(WS-NBREG)
        AND WS-TECH-LEVEL(WS-NBREG, WS-BIDX) > WS-TECH-LEVEL(WS-IDX, WS-BIDX)
         MOVE 1 TO WS-DIFFUSION-FOUND
     END-IF.
@@ -3303,7 +3357,7 @@ CULTURE-DRIFT-ALL.
 *>    отстающие регионы перенимают культурные элементы от соседей с
 *>    разрывом ≥ 30 пунктов, как «культурная волна».
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
 *>          MERCANT-правитель → коммерческая культура
             IF WS-RULER-TRAIT(WS-IDX) = "MERCANT   "
                AND WS-CULT-MERC(WS-IDX) < CULTURE-MAX
@@ -3381,7 +3435,7 @@ CULTURE-DIFFUSE-NEIGHBOR.
         WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
     END-EVALUATE
     IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
-       AND WS-PROD-MODE(WS-NBREG) NOT = WS-MODE-COLLAPSED
+       AND NOT POLITY-DORMANT(WS-NBREG)
         IF WS-CULT-MIL(WS-NBREG) >=
               WS-CULT-MIL(WS-IDX) + CULTURE-DIFFUSION-MIN
            AND WS-CULT-MIL(WS-IDX) < CULTURE-MAX
@@ -3403,7 +3457,7 @@ INNOVATION-CHECK-ALL.
 *> Phase 15. Раз в N ходов на регион случается «изобретение» с уникальным
 *> эффектом и записью в хронике. Условия каждой инновации индивидуальны.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
            AND WS-CAPITAL-STOCK(WS-IDX) > INNOVATION-CAPITAL-MIN
             MOVE INNOVATION-CHECK-PERMIL TO WS-PROB-PERMIL
             MOVE "INNOVATION    " TO WS-DEBUG-LABEL
@@ -3502,7 +3556,7 @@ PRINTING-NB-SPREAD.
         WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
     END-EVALUATE
     IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
-       AND WS-PROD-MODE(WS-NBREG) NOT = WS-MODE-COLLAPSED
+       AND NOT POLITY-DORMANT(WS-NBREG)
         ADD 2 TO WS-CONSCIOUSNESS(WS-NBREG)
         IF WS-CONSCIOUSNESS(WS-NBREG) > CONSCIOUSNESS-MAX
             MOVE CONSCIOUSNESS-MAX TO WS-CONSCIOUSNESS(WS-NBREG)
@@ -3628,7 +3682,7 @@ CLIMATE-EVENTS-ALL.
 *> Природные и культурные шоки, привязанные к рельефу.
 *> Хаос в стиле Dwarf Fortress: историю двигают не только классы, но и засухи.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
-        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+        IF NOT POLITY-DORMANT(WS-IDX)
             EVALUATE WS-TERRAIN(WS-IDX)
                 WHEN "SWAMP     "
                     MOVE SWAMP-EPIDEMIC-PERMIL TO WS-PROB-PERMIL
