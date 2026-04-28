@@ -20,7 +20,7 @@ use crate::market::parse_market;
 use crate::relations::{parse_relations, top_relations};
 use crate::saves;
 use crate::tech::{parse_tech, BRANCH_COUNT, BRANCH_SHORT, L3_ALTERNATIVES, L4_SUBTECHS, RegionTech};
-use crate::world::{parse_world, Region};
+use crate::world::{parse_world, Polity, Region};
 
 /// Что показываем в правой панели — детали региона, мировой дашборд, или древо.
 #[derive(Clone, Copy, PartialEq)]
@@ -342,7 +342,9 @@ fn render_slot_dialog(f: &mut Frame, area: Rect, dialog: SlotDialog) {
 }
 
 pub fn run() -> io::Result<()> {
-    let world_path = "cobol/world.dat";
+    // Phase 24 — Этап 1: world.dat расщеплён. Существование regions.dat —
+    // признак сгенерированного мира.
+    let regions_path = "cobol/regions.dat";
     let chronicle_path = "cobol/chronicle.dat";
 
     enable_raw_mode()?;
@@ -377,9 +379,10 @@ pub fn run() -> io::Result<()> {
         }
     };
 
-    // Если по какой-то причине world.dat не появился (старый сейв без него) —
-    // сгенерируем заново, чтобы UI не падал на парсинге пустого файла.
-    if !std::path::Path::new(world_path).exists() {
+    // Если по какой-то причине regions.dat не появился (новый запуск,
+    // или старый сейв в legacy формате не мигрировал) — сгенерируем мир
+    // заново, чтобы UI не падал на парсинге пустого файла.
+    if !std::path::Path::new(regions_path).exists() {
         let _ = run_world_gen();
         year = 0;
     }
@@ -410,17 +413,22 @@ pub fn run() -> io::Result<()> {
     let tech_path = "cobol/tech.dat";
 
     'main: loop {
-        let regions = parse_world(world_path);
+        // Phase 24 — Этап 1: parse_world() читает оба файла regions.dat
+        // и polities.dat. На Этапе 1 polity[i] всегда живёт в region[i],
+        // имена синхронизированы. UI работает с двумя векторами параллельно.
+        let world = parse_world();
+        let regions: &Vec<Region> = &world.regions;
+        let polities: &Vec<Polity> = &world.polities;
         let chronicle = parse_chronicle(chronicle_path);
         let market = parse_market(market_path);
         let relations = parse_relations(relations_path);
         let tech = parse_tech(tech_path);
         let region_names: Vec<String> = regions.iter().map(|r| r.name.clone()).collect();
-        let n = regions.len();
+        let n = regions.len().min(polities.len());
 
         // Записываем снимок истории если год сменился (per-session, в памяти)
-        history.record_if_new_year(year, &regions, |r: &Region| {
-            (r.class_tension as u64, r.population as u64, r.capital_stock as u64)
+        history.record_if_new_year(year, polities, |p: &Polity| {
+            (p.class_tension as u64, p.population as u64, p.capital_stock as u64)
         });
 
         terminal.draw(|f| {
@@ -486,29 +494,30 @@ pub fn run() -> io::Result<()> {
 
             let rows: Vec<Row> = regions
                 .iter()
-                .map(|r| {
-                    if is_collapsed(&r.prod_mode) {
+                .zip(polities.iter())
+                .map(|(r, p)| {
+                    if is_collapsed(&p.prod_mode) {
                         Row::new([
                             Cell::from(r.name.clone()),
                             Cell::from(r.terrain.clone()),
-                            Cell::from(format!("{:>8}", r.population)),
+                            Cell::from(format!("{:>8}", p.population)),
                             Cell::from("  —").style(Style::default().fg(Color::DarkGray)),
                             Cell::from("☠ COLLAPSED").style(Style::default().fg(Color::DarkGray)),
                             Cell::from("COLLAPSED").style(Style::default().fg(Color::DarkGray)),
                         ]).style(Style::default().fg(Color::DarkGray))
                     } else {
-                        let col = tension_color(r.class_tension);
-                        let war = if r.at_war_with != 0 { "⚔ " } else { "  " };
-                        let mcol = mode_color(&r.prod_mode);
+                        let col = tension_color(p.class_tension);
+                        let war = if p.at_war_with != 0 { "⚔ " } else { "  " };
+                        let mcol = mode_color(&p.prod_mode);
                         Row::new([
                             Cell::from(r.name.clone()),
                             Cell::from(r.terrain.clone()),
-                            Cell::from(format!("{:>8}", r.population)),
-                            Cell::from(format!("{:>3}", r.class_tension))
+                            Cell::from(format!("{:>8}", p.population)),
+                            Cell::from(format!("{:>3}", p.class_tension))
                                 .style(Style::default().fg(col)),
-                            Cell::from(format!("{}{}", war, tension_label(r.class_tension)))
+                            Cell::from(format!("{}{}", war, tension_label(p.class_tension)))
                                 .style(Style::default().fg(col)),
-                            Cell::from(r.prod_mode.clone())
+                            Cell::from(p.prod_mode.clone())
                                 .style(Style::default().fg(mcol)),
                         ])
                     }
@@ -534,24 +543,29 @@ pub fn run() -> io::Result<()> {
             f.render_stateful_widget(table, hchunks[0], &mut table_state);
 
             // --- Detail panel ---
-            let detail_lines = if let Some(r) = regions.get(selected) {
-                let tcol = tension_color(r.class_tension);
-                let war_line = if r.at_war_with == 0 {
+            // Phase 24 — Этап 1: иерархия Region (геофон) → Polity (политика).
+            // На Этапе 1 имена синхронизированы; разделитель «Region: X / Polity: Y»
+            // готов к будущему расхождению на Этапе 2+.
+            let detail_lines = if let (Some(r), Some(p)) =
+                (regions.get(selected), polities.get(selected))
+            {
+                let tcol = tension_color(p.class_tension);
+                let war_line = if p.at_war_with == 0 {
                     Line::from(Span::styled("Peace", Style::default().fg(Color::Green)))
                 } else {
                     Line::from(Span::styled(
                         format!(
                             "⚔ WAR vs {:02} — yr {:02} ({})",
-                            r.at_war_with,
-                            r.war_year,
-                            r.war_type.trim()
+                            p.at_war_with,
+                            p.war_year,
+                            p.war_type.trim()
                         ),
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     ))
                 };
 
                 // Цвет трейта правителя — намёк на характер
-                let trait_color = match r.ruler_trait.trim() {
+                let trait_color = match p.ruler_trait.trim() {
                     "AMBITIOUS" => Color::LightRed,
                     "CAUTIOUS"  => Color::LightBlue,
                     "CRUEL"     => Color::Red,
@@ -565,83 +579,95 @@ pub fn run() -> io::Result<()> {
                 let enemies = top_relations(&relations, selected, &region_names, -1, 2);
 
                 let mut lines = vec![
-                    Line::from(Span::styled(
-                        r.name.clone(),
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(format!("{:10}  {}", r.terrain, r.climate)),
-                    Line::from(format!("Pop: {:>9}", r.population)),
+                    Line::from(vec![
+                        Span::styled("Region: ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            r.name.clone(),
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("  {} {}", r.terrain.trim(), r.climate.trim()),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Polity: ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            p.name.clone(),
+                            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
+                    Line::from(format!("Pop: {:>9}", p.population)),
                     Line::from(""),
                     // Ruler block
                     Line::from(vec![
                         Span::styled("👑 ", Style::default().fg(Color::Yellow)),
                         Span::styled(
-                            format!("{} (age {})", r.ruler_name.trim(), r.ruler_age),
+                            format!("{} (age {})", p.ruler_name.trim(), p.ruler_age),
                             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                         ),
                     ]),
                     Line::from(vec![
                         Span::raw("   "),
                         Span::styled(
-                            r.ruler_trait.trim().to_string(),
+                            p.ruler_trait.trim().to_string(),
                             Style::default().fg(trait_color).add_modifier(Modifier::BOLD),
                         ),
-                        Span::raw(format!(" — {} yr reign", r.ruler_reign)),
+                        Span::raw(format!(" — {} yr reign", p.ruler_reign)),
                     ]),
                     Line::from(""),
                     Line::from(Span::styled(
-                        format!("Tension: {:>3}  {}", r.class_tension, tension_label(r.class_tension)),
+                        format!("Tension: {:>3}  {}", p.class_tension, tension_label(p.class_tension)),
                         Style::default().fg(tcol),
                     )),
                     Line::from(format!(
                         "Awareness: {:>3}/100",
-                        r.consciousness
+                        p.consciousness
                     )),
                     Line::from(vec![
                         Span::raw("Culture:   "),
                         Span::styled(
-                            format!("⚔{:>2}", r.culture_mil),
-                            Style::default().fg(if r.culture_mil >= 50 { Color::Red } else { Color::DarkGray }),
+                            format!("⚔{:>2}", p.culture_mil),
+                            Style::default().fg(if p.culture_mil >= 50 { Color::Red } else { Color::DarkGray }),
                         ),
                         Span::raw(" "),
                         Span::styled(
-                            format!("💰{:>2}", r.culture_merc),
-                            Style::default().fg(if r.culture_merc >= 50 { Color::LightCyan } else { Color::DarkGray }),
+                            format!("💰{:>2}", p.culture_merc),
+                            Style::default().fg(if p.culture_merc >= 50 { Color::LightCyan } else { Color::DarkGray }),
                         ),
                         Span::raw(" "),
                         Span::styled(
-                            format!("☩{:>2}", r.culture_rel),
-                            Style::default().fg(if r.culture_rel >= 50 { Color::LightYellow } else { Color::DarkGray }),
+                            format!("☩{:>2}", p.culture_rel),
+                            Style::default().fg(if p.culture_rel >= 50 { Color::LightYellow } else { Color::DarkGray }),
                         ),
                     ]),
                     Line::from(""),
                     Line::from(format!(
                         "Peasants  {:>3}%  Artisans {:>3}%",
-                        r.peasants_pct, r.artisans_pct
+                        p.peasants_pct, p.artisans_pct
                     )),
                     Line::from(format!(
                         "Merchants {:>3}%  Nobility {:>3}%",
-                        r.merchants_pct, r.nobility_pct
+                        p.merchants_pct, p.nobility_pct
                     )),
-                    Line::from(format!("Clergy    {:>3}%", r.clergy_pct)),
+                    Line::from(format!("Clergy    {:>3}%", p.clergy_pct)),
                     Line::from(""),
                     Line::from(vec![
                         Span::raw("Mode:    "),
                         Span::styled(
-                            r.prod_mode.clone(),
-                            Style::default().fg(mode_color(&r.prod_mode)).add_modifier(Modifier::BOLD),
+                            p.prod_mode.clone(),
+                            Style::default().fg(mode_color(&p.prod_mode)).add_modifier(Modifier::BOLD),
                         ),
                         // Phase 21: возраст эпохи — сколько ходов регион уже в этом модусе.
-                        // Помогает увидеть «эпоха зреет» вместо мгновенных переходов.
                         Span::styled(
-                            format!("  ({}y)", r.mode_years),
+                            format!("  ({}y)", p.mode_years),
                             Style::default().fg(Color::DarkGray),
                         ),
                     ]),
                     Line::from(format!("Good:    {}", r.primary_good)),
-                    Line::from(format!("Surplus: {:.2}%", r.surplus_rate)),
-                    Line::from(format!("Capital: {:.0}", r.capital_stock)),
-                    Line::from(format!("Military:{:>6}", r.military_strength)),
+                    Line::from(format!("Surplus: {:.2}%", p.surplus_rate)),
+                    Line::from(format!("Capital: {:.0}", p.capital_stock)),
+                    Line::from(format!("Military:{:>6}", p.military_strength)),
                     Line::from(""),
                     war_line,
                 ];
@@ -691,7 +717,7 @@ pub fn run() -> io::Result<()> {
 
             match view {
                 DetailView::Dashboard => {
-                    render_dashboard(f, hchunks[1], &regions, year);
+                    render_dashboard(f, hchunks[1], regions, polities, year);
                 }
                 DetailView::TechTree => {
                     let region_name = regions
@@ -1239,15 +1265,23 @@ fn tech_l4_alt(current_level: u8, l4_choice: u8, alt: u8, name: &str, progress: 
 
 /// Dashboard: суммарная картина мира — всего населения, капитала, активных войн,
 /// распределение эпох. Toggled by [W].
-fn render_dashboard(f: &mut Frame, area: Rect, regions: &[Region], year: u32) {
-    let total_pop: u64 = regions.iter().map(|r| r.population as u64).sum();
-    let total_cap: u64 = regions.iter().map(|r| r.capital_stock as u64).sum();
-    let active_wars: usize = regions.iter().filter(|r| r.at_war_with != 0).count() / 2;
+/// Phase 24 — Этап 1: обращение к политическим полям через `polities[i]`,
+/// геофон-имена через `regions[i]`.
+fn render_dashboard(
+    f: &mut Frame,
+    area: Rect,
+    regions: &[Region],
+    polities: &[Polity],
+    year: u32,
+) {
+    let total_pop: u64 = polities.iter().map(|p| p.population as u64).sum();
+    let total_cap: u64 = polities.iter().map(|p| p.capital_stock as u64).sum();
+    let active_wars: usize = polities.iter().filter(|p| p.at_war_with != 0).count() / 2;
 
     // Era distribution
     let mut counts = std::collections::BTreeMap::new();
-    for r in regions {
-        *counts.entry(r.prod_mode.trim().to_string()).or_insert(0u32) += 1;
+    for p in polities {
+        *counts.entry(p.prod_mode.trim().to_string()).or_insert(0u32) += 1;
     }
     // Order modes by ladder
     let order = [
@@ -1261,19 +1295,23 @@ fn render_dashboard(f: &mut Frame, area: Rect, regions: &[Region], year: u32) {
         "COLLAPSED",
     ];
 
-    // Most warlike (highest war_year), most rebellious (highest tension), oldest ruler
-    let warlike = regions
+    // Most warlike (highest war_year), most rebellious (highest tension), oldest ruler.
+    // Возвращаем индекс — потом lookup на regions[i] для имени территории.
+    let warlike: Option<(usize, &Polity)> = polities
         .iter()
-        .filter(|r| !is_collapsed(&r.prod_mode))
-        .max_by_key(|r| r.war_year);
-    let rebel = regions
+        .enumerate()
+        .filter(|(_, p)| !is_collapsed(&p.prod_mode))
+        .max_by_key(|(_, p)| p.war_year);
+    let rebel: Option<(usize, &Polity)> = polities
         .iter()
-        .filter(|r| !is_collapsed(&r.prod_mode))
-        .max_by_key(|r| r.class_tension);
-    let oldest_ruler = regions
+        .enumerate()
+        .filter(|(_, p)| !is_collapsed(&p.prod_mode))
+        .max_by_key(|(_, p)| p.class_tension);
+    let oldest_ruler: Option<(usize, &Polity)> = polities
         .iter()
-        .filter(|r| !is_collapsed(&r.prod_mode))
-        .max_by_key(|r| r.ruler_age);
+        .enumerate()
+        .filter(|(_, p)| !is_collapsed(&p.prod_mode))
+        .max_by_key(|(_, p)| p.ruler_age);
 
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
@@ -1302,32 +1340,36 @@ fn render_dashboard(f: &mut Frame, area: Rect, regions: &[Region], year: u32) {
         }
     }
     lines.push(Line::from(""));
-    if let Some(r) = warlike {
-        if r.at_war_with != 0 || r.war_year > 0 {
+    if let Some((i, p)) = warlike {
+        if p.at_war_with != 0 || p.war_year > 0 {
             lines.push(Line::from(format!(
                 "Most warlike:  {} (war yr {})",
-                r.name.trim(),
-                r.war_year
+                regions.get(i).map(|r| r.name.trim()).unwrap_or(""),
+                p.war_year
             )));
         }
     }
-    if let Some(r) = rebel {
-        if r.class_tension > 50 {
+    if let Some((i, p)) = rebel {
+        if p.class_tension > 50 {
             lines.push(Line::from(vec![
                 Span::raw("Most rebellious: "),
                 Span::styled(
-                    format!("{} ({})", r.name.trim(), r.class_tension),
-                    Style::default().fg(tension_color(r.class_tension)),
+                    format!(
+                        "{} ({})",
+                        regions.get(i).map(|r| r.name.trim()).unwrap_or(""),
+                        p.class_tension
+                    ),
+                    Style::default().fg(tension_color(p.class_tension)),
                 ),
             ]));
         }
     }
-    if let Some(r) = oldest_ruler {
+    if let Some((i, p)) = oldest_ruler {
         lines.push(Line::from(format!(
             "Oldest ruler:  {} (age {}, {})",
-            r.ruler_name.trim(),
-            r.ruler_age,
-            r.name.trim()
+            p.ruler_name.trim(),
+            p.ruler_age,
+            regions.get(i).map(|r| r.name.trim()).unwrap_or("")
         )));
     }
 

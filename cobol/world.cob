@@ -5,20 +5,36 @@ AUTHOR. ECOS-ENGINE.
 ENVIRONMENT DIVISION.
 INPUT-OUTPUT SECTION.
 FILE-CONTROL.
-    SELECT WORLD-FILE ASSIGN TO "cobol/world.dat"
+*>  Phase 24 — Этап 1: world.dat расщеплён на regions.dat (геофон,
+*>  статичен) и polities.dat (политический слой, переписывается каждый ход).
+    SELECT REGIONS-FILE  ASSIGN TO "cobol/regions.dat"
+        ORGANIZATION IS LINE SEQUENTIAL.
+    SELECT POLITIES-FILE ASSIGN TO "cobol/polities.dat"
         ORGANIZATION IS LINE SEQUENTIAL.
 
 DATA DIVISION.
 FILE SECTION.
-FD WORLD-FILE.
-01 WORLD-RECORD PIC X(200).
+FD REGIONS-FILE.
+01 REGION-RECORD  PIC X(80).
+FD POLITIES-FILE.
+01 POLITY-RECORD  PIC X(180).
 
 WORKING-STORAGE SECTION.
 
+*> Phase 24 — Этап 1. Структура расщеплена на Region (геофон,
+*> постоянный) и Polity (политический слой, динамичный). На Этапе 1
+*> 1 полития на регион, индексы совпадают, WS-POLITY-NAME = WS-NAME.
 01 WS-REGIONS OCCURS 10 TIMES.
    05 WS-NAME              PIC X(20).
    05 WS-TERRAIN           PIC X(10).
    05 WS-CLIMATE           PIC X(10).
+   05 WS-PRIMARY-GOOD      PIC X(15).
+   05 WS-NEIGHBOR-1        PIC 99.
+   05 WS-NEIGHBOR-2        PIC 99.
+   05 WS-NEIGHBOR-3        PIC 99.
+
+01 WS-POLITIES OCCURS 10 TIMES.
+   05 WS-POLITY-NAME       PIC X(20).
    05 WS-POPULATION        PIC 9(8).
    05 WS-PEASANTS-PCT      PIC 9(3).
    05 WS-ARTISANS-PCT      PIC 9(3).
@@ -26,7 +42,6 @@ WORKING-STORAGE SECTION.
    05 WS-NOBILITY-PCT      PIC 9(3).
    05 WS-CLERGY-PCT        PIC 9(3).
    05 WS-PROD-MODE         PIC X(15).
-   05 WS-PRIMARY-GOOD      PIC X(15).
    05 WS-LABOUR-HOURS      PIC 9(10).
    05 WS-OUTPUT-VALUE      PIC 9(10)V99.
    05 WS-SURPLUS-RATE      PIC 9(3)V99.
@@ -39,9 +54,6 @@ WORKING-STORAGE SECTION.
    05 WS-COLLAPSE-TIMER    PIC 9(3).
    05 WS-WAR-YEAR          PIC 9(3).
    05 WS-WAR-TYPE          PIC X(10).
-   05 WS-NEIGHBOR-1        PIC 99.
-   05 WS-NEIGHBOR-2        PIC 99.
-   05 WS-NEIGHBOR-3        PIC 99.
 *> Phase 9 — лица и сознание
    05 WS-RULER-NAME        PIC X(20).
    05 WS-RULER-AGE         PIC 9(2).
@@ -107,17 +119,23 @@ WORKING-STORAGE SECTION.
 
 PROCEDURE DIVISION.
 MAIN-PARA.
-    OPEN OUTPUT WORLD-FILE
-
     PERFORM INIT-REGION VARYING WS-IDX FROM 1 BY 1
         UNTIL WS-IDX > 10
 
     PERFORM ASSIGN-NEIGHBORS
 
-    PERFORM WRITE-REGIONS VARYING WS-IDX FROM 1 BY 1
+*>  Phase 24 — Этап 1: пишем два файла. regions.dat (геофон) — статика,
+*>  никогда больше не переписывается до следующего mundo gen. polities.dat
+*>  (политический слой) — переписывается simulate'ом каждый ход.
+    OPEN OUTPUT REGIONS-FILE
+    PERFORM WRITE-REGION-ROW VARYING WS-IDX FROM 1 BY 1
         UNTIL WS-IDX > 10
+    CLOSE REGIONS-FILE
 
-    CLOSE WORLD-FILE
+    OPEN OUTPUT POLITIES-FILE
+    PERFORM WRITE-POLITY-ROW VARYING WS-IDX FROM 1 BY 1
+        UNTIL WS-IDX > 10
+    CLOSE POLITIES-FILE
     STOP RUN.
 
 INIT-REGION.
@@ -324,7 +342,11 @@ INIT-REGION.
     MOVE 000                 TO WS-CULT-MERC(WS-IDX)
     MOVE 008                 TO WS-CULT-REL(WS-IDX)
 *>  Phase 21 — стартуем «новой» эпохой
-    MOVE 0000                TO WS-MODE-YEARS(WS-IDX).
+    MOVE 0000                TO WS-MODE-YEARS(WS-IDX)
+*>  Phase 24 — Этап 1: имя политии = имя региона на старте.
+*>  В будущем (Этап 2+) при спавне новой политии в существующем регионе
+*>  WS-POLITY-NAME будет отличаться от WS-NAME.
+    MOVE WS-NAME(WS-IDX)     TO WS-POLITY-NAME(WS-IDX).
 
 ASSIGN-NEIGHBORS.
 *> Фиксированная топология: кольцо + диагональные связи.
@@ -381,11 +403,35 @@ ASSIGN-NEIGHBORS.
     MOVE 08 TO WS-NEIGHBOR-2(10)
     MOVE 09 TO WS-NEIGHBOR-3(10).
 
-WRITE-REGIONS.
+WRITE-REGION-ROW.
+*>  Геофон. Layout regions.dat (1-indexed COBOL смещения):
+*>    NAME(20) | TERRAIN(10) | CLIMATE(10) | PRIMARY-GOOD(15) |
+*>    NEIGHBOR-1(2) | NEIGHBOR-2(2) | NEIGHBOR-3(2)  = 61 байт
+    MOVE SPACES TO WS-OUT-LINE
     STRING
         WS-NAME(WS-IDX)             DELIMITED SIZE
         WS-TERRAIN(WS-IDX)          DELIMITED SIZE
         WS-CLIMATE(WS-IDX)          DELIMITED SIZE
+        WS-PRIMARY-GOOD(WS-IDX)     DELIMITED SIZE
+        WS-NEIGHBOR-1(WS-IDX)       DELIMITED SIZE
+        WS-NEIGHBOR-2(WS-IDX)       DELIMITED SIZE
+        WS-NEIGHBOR-3(WS-IDX)       DELIMITED SIZE
+        INTO WS-OUT-LINE
+    END-STRING
+    WRITE REGION-RECORD FROM WS-OUT-LINE.
+
+WRITE-POLITY-ROW.
+*>  Политический слой. Layout polities.dat (1-indexed COBOL):
+*>    POLITY-NAME(20) | POPULATION(8) | PEASANTS(3) | ARTISANS(3) |
+*>    MERCHANTS(3) | NOBILITY(3) | CLERGY(3) | PROD-MODE(15) |
+*>    LABOUR-HOURS(10) | SURPLUS-RATE(5) | CAPITAL-STOCK(12) |
+*>    CLASS-TENSION(3) | MILITARY-STR(5) | AT-WAR-WITH(2) |
+*>    COLLAPSE-TIMER(3) | WAR-YEAR(3) | WAR-TYPE(10) | RULER-NAME(20) |
+*>    RULER-AGE(2) | RULER-TRAIT(10) | RULER-REIGN(3) | CONSCIOUSNESS(3) |
+*>    CULT-MIL(3) | CULT-MERC(3) | CULT-REL(3) | MODE-YEARS(4)  = 158 байт
+    MOVE SPACES TO WS-OUT-LINE
+    STRING
+        WS-POLITY-NAME(WS-IDX)      DELIMITED SIZE
         WS-POPULATION(WS-IDX)       DELIMITED SIZE
         WS-PEASANTS-PCT(WS-IDX)     DELIMITED SIZE
         WS-ARTISANS-PCT(WS-IDX)     DELIMITED SIZE
@@ -393,7 +439,6 @@ WRITE-REGIONS.
         WS-NOBILITY-PCT(WS-IDX)     DELIMITED SIZE
         WS-CLERGY-PCT(WS-IDX)       DELIMITED SIZE
         WS-PROD-MODE(WS-IDX)        DELIMITED SIZE
-        WS-PRIMARY-GOOD(WS-IDX)     DELIMITED SIZE
         WS-LABOUR-HOURS(WS-IDX)     DELIMITED SIZE
         WS-SURPLUS-RATE(WS-IDX)     DELIMITED SIZE
         WS-CAPITAL-STOCK(WS-IDX)    DELIMITED SIZE
@@ -403,9 +448,6 @@ WRITE-REGIONS.
         WS-COLLAPSE-TIMER(WS-IDX)   DELIMITED SIZE
         WS-WAR-YEAR(WS-IDX)         DELIMITED SIZE
         WS-WAR-TYPE(WS-IDX)         DELIMITED SIZE
-        WS-NEIGHBOR-1(WS-IDX)       DELIMITED SIZE
-        WS-NEIGHBOR-2(WS-IDX)       DELIMITED SIZE
-        WS-NEIGHBOR-3(WS-IDX)       DELIMITED SIZE
         WS-RULER-NAME(WS-IDX)       DELIMITED SIZE
         WS-RULER-AGE(WS-IDX)        DELIMITED SIZE
         WS-RULER-TRAIT(WS-IDX)      DELIMITED SIZE
@@ -418,4 +460,4 @@ WRITE-REGIONS.
         INTO WS-OUT-LINE
     END-STRING
 
-    WRITE WORLD-RECORD FROM WS-OUT-LINE.
+    WRITE POLITY-RECORD FROM WS-OUT-LINE.

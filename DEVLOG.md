@@ -1,4 +1,101 @@
 
+## [Phase 24 / Этап 1 — Region/Polity split (рефакторинг без новой логики)] 2026-04-28
+
+### Зачем
+
+Структура `WS-REGIONS OCCURS 10 TIMES` смешивала географию (terrain, climate, neighbors, name территории) с политикой (mode, классы, правитель, capital, культура, mode_years). Из-за этого государство «не может пропасть» — слот в массиве это и территория, и страна одновременно. Все попытки сделать коллапс реалистичным упирались в это допущение.
+
+Этап 1 — фундаментальный архитектурный шаг **без новой логики**: структура расщеплена на Region (геофон, постоянный) + Polity (политический слой, динамичный). На этом этапе строго 1 полития на регион, индексы совпадают, имена синхронизированы. Поведение симуляции **байт-в-байт идентично** baseline до рефакторинга. Этапы 2-4 (3 ячейки/регион, EXTINCT, спавн наследников при распаде, STATELESS, аннексия в войне) — отдельные планы поверх готового фундамента.
+
+### Что сделано
+
+**A. Регрессионный baseline** (`scripts/baseline.sh`):
+- `capture` — записывает эталон `cobol/baseline_*.dat` после 500 ходов на свежем мире
+- `check` — прогоняет 500 ходов и `diff`-ит против эталона
+- GnuCOBOL `FUNCTION RANDOM(seed)` детерминирован при фиксированной последовательности вызовов → побайтовый match гарантирован при идентичной логике
+
+**B. Split структур данных в COBOL** (атомарно, в обоих `.cob` файлах):
+- `WS-REGIONS OCCURS 10` — теперь только геофон: NAME, TERRAIN, CLIMATE, PRIMARY-GOOD, NEIGHBOR-1/2/3
+- `WS-POLITIES OCCURS 10` — политический слой: POLITY-NAME (синхронизирован с NAME на Этапе 1), POPULATION, классы, PROD-MODE, ruler, consciousness, культура, mode_years и runtime-only поля
+- Резервные имена `WS-PIDX`/`WS-RIDX` объявлены рядом с `WS-IDX` — задел на Этап 2, когда индексы политии и региона разойдутся
+
+**C. Расщепление файлов**:
+- `world.dat` (203 байта/строка) → `regions.dat` (61 байт/строка, статика) + `polities.dat` (162 байта/строка, динамика)
+- `world.cob` пишет оба файла при генерации мира
+- `simulate.cob` читает оба, переписывает только `polities.dat` каждый ход (regions неизменны → один лишний disk-IO/ход устранён)
+- В `READ-WORLD`: `READ REGIONS-FILE` и `READ POLITIES-FILE` параллельно одним циклом VARYING WS-IDX
+- Удалён `WORLD-REC-LEN`, заменён двумя decl `WS-REGION-REC PIC X(80)` и `WS-POLITY-REC PIC X(180)`
+
+**D. Rust-структуры** (`src/world.rs`):
+- `pub struct Region { name, terrain, climate, primary_good, neighbors }`
+- `pub struct Polity { name, population, классы, prod_mode, labour_hours, surplus_rate, capital_stock, class_tension, military_strength, at_war_with, war_year, war_type, ruler_*, consciousness, culture_*, mode_years }`
+- `pub struct World { regions, polities }` с методом `polity_of(idx)` (зарезервировано для Этапа 2)
+- `parse_regions()` и `parse_polities()` — отдельные функции по новым layout'ам
+- `parse_world()` — единая точка входа, читает оба файла
+
+**E. UI адаптация** (`src/ui.rs`, ~10 мест):
+- Главный loop: `let world = parse_world(); let regions = &world.regions; let polities = &world.polities;`
+- Таблица регионов: `regions.iter().zip(polities.iter())` — каждая строка показывает имя/terrain из Region, mode/pop/tension из Polity
+- Detail panel: иерархия «Region: Ironmarch  PLAINS TEMPERATE / Polity: Ironmarch» с разделителем — на Этапе 1 имена одинаковы, на Этапе 2+ разойдутся когда полития сменится
+- `render_dashboard(regions, polities, year)` — суммирует по `polities`, имена территорий тянет из `regions` через индекс (lookup для «Most warlike: <region_name>»)
+- `WorldHistory` — индексирует per-polity (sparkline'ы tension/pop/capital политии)
+
+**F. Saves migration** (`src/saves.rs`):
+- `SAVE_FILES` обновлён на 7 файлов: `regions.dat`, `polities.dat`, `year.dat`, `chronicle.dat`, `market.dat`, `relations.dat`, `tech.dat`
+- Новая функция `migrate_legacy_slot(slot_dir)` — расщепляет legacy `world.dat` по Phase 21 offsets'ам в `regions.dat` + `polities.dat`. Идемпотентна (skip если regions.dat уже есть)
+- Оригинал legacy переименовывается в `world.dat.legacy` (для возможности отката, не удаляется)
+- `load_from_slot` вызывает миграцию первым делом, перед копированием live-файлов
+- `list_slots` распознаёт slot как «существующий» если есть `regions.dat` ИЛИ legacy `world.dat`
+- Unit-тест `legacy_migration_splits_world_dat` — генерирует sample 203-байтную строку Phase 21, прогоняет миграцию, проверяет что regions/polities содержат правильные имена/поля и legacy переименован
+
+### Файлы под изменение
+
+- `cobol/world.cob` — split structure, два FD (regions/polities), `WRITE-REGION-ROW` + `WRITE-POLITY-ROW`, инициализация `WS-POLITY-NAME = WS-NAME`
+- `cobol/simulate.cob` — split structure, два SELECT/FD, `READ-WORLD` параллельно читает оба файла, `WRITE-WORLD` пишет только polities.dat, `PARSE-REGION-RECORD` + `PARSE-POLITY-RECORD`, REBIRTH восстанавливает имя политии = имя региона
+- `src/world.rs` — переписан с двумя структурами Region и Polity, `World` обёртка, новые `parse_regions/parse_polities/parse_world`
+- `src/ui.rs` — ~10 callsites: разделение r.X (геофон) и polities[i].X (политика), иерархия в detail, render_dashboard принимает оба слайса
+- `src/saves.rs` — `migrate_legacy_slot`, новые `SAVE_FILES`, обновлён `list_slots`/`load_from_slot`/`new_game`
+- `scripts/baseline.sh` — новый: capture/check регрессия 500 ходов
+
+### Регрессия (Шаг 7)
+
+```
+==> Checking against baseline (500 turns)...
+  OK   cobol/chronicle.dat matches baseline
+  OK   cobol/tech.dat matches baseline
+  OK   cobol/relations.dat matches baseline
+  OK   cobol/market.dat matches baseline
+All matched.
+```
+
+Поведение симуляции **байт-в-байт идентично** до и после рефакторинга. Это подтверждает, что Этап 1 — чистая структурная работа без сдвигов поведения.
+
+Sanity для новых файлов:
+- `regions.dat`: 10 строк × 61 байт (статика, не меняется на симуляции)
+- `polities.dat`: 10 строк × 162 байта (переписывается каждый ход)
+
+Unit-тест миграции:
+```
+test saves::tests::legacy_migration_splits_world_dat ... ok
+```
+
+### Что НЕ делается (резерв на Этапы 2-4)
+
+- 3 ячейки на регион (`cell_count = 1` фиксированно)
+- EXTINCT флаг и спавн новых политий
+- Распад больших политий на наследников
+- STATELESS как отдельный mode
+- Аннексия ячейки в WAR-VICTORY
+- Переименование chronicle filter «region» → «polity» (на Этапе 1 имена совпадают — нет смысла путать пользователя)
+- Хранилище истории «мёртвых» политий после extinct
+- WAR-CHECK через географию (сейчас 1:1, не нужно)
+
+### Замечания
+
+- `WS-POLITY-NAME` объявлено и инициализируется = `WS-NAME`, но **в логике simulate.cob не используется** на Этапе 1 (все хроники продолжают писать `WS-NAME(WS-IDX)`, что одно и то же). Миграция references на `WS-POLITY-NAME` где это политическое имя — задача Этапа 2
+- `polity_of()` метод объявлен но `#[allow(dead_code)]` — UI работает с двумя векторами параллельно; метод оставлен для миграции на индексирование через polity_id когда индексы разойдутся
+- collapse_timer не вынесен в Polity-структуру Rust (нужен только COBOL для отсчёта REBIRTH-DURATION, UI не отображает); комментарий в layout-таблице сохранён
+
 ## [Phase 22+23 — Естественный темп через сознание; revolution двигает эпоху] 2026-04-27
 
 ### Постановка проблемы

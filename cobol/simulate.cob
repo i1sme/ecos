@@ -4,7 +4,12 @@ PROGRAM-ID. SIMULATE.
 ENVIRONMENT DIVISION.
 INPUT-OUTPUT SECTION.
 FILE-CONTROL.
-    SELECT WORLD-FILE     ASSIGN TO "cobol/world.dat"
+*>  Phase 24 — Этап 1: world.dat расщеплён на regions.dat (геофон) и
+*>  polities.dat (политический слой). Регионы статичны и читаются один
+*>  раз; полития переписывается каждый ход.
+    SELECT REGIONS-FILE   ASSIGN TO "cobol/regions.dat"
+        ORGANIZATION IS LINE SEQUENTIAL.
+    SELECT POLITIES-FILE  ASSIGN TO "cobol/polities.dat"
         ORGANIZATION IS LINE SEQUENTIAL.
     SELECT YEAR-FILE      ASSIGN TO "cobol/year.dat"
         ORGANIZATION IS LINE SEQUENTIAL.
@@ -22,8 +27,10 @@ FILE-CONTROL.
 
 DATA DIVISION.
 FILE SECTION.
-FD WORLD-FILE.
-01 WS-WORLD-REC   PIC X(204).
+FD REGIONS-FILE.
+01 WS-REGION-REC  PIC X(80).
+FD POLITIES-FILE.
+01 WS-POLITY-REC  PIC X(180).
 
 FD YEAR-FILE.
 01 WS-YEAR-REC    PIC X(10).
@@ -49,7 +56,9 @@ WORKING-STORAGE SECTION.
 *> Размерности
 78 REGION-COUNT             VALUE 10.
 78 MARKET-COUNT             VALUE 8.
-78 WORLD-REC-LEN             VALUE 203.
+*> Phase 24 — Этап 1: WORLD-REC-LEN убрана. Файл расщеплён, новые
+*> длины записей (ориентировочно 80 для regions, 160 для polities)
+*> регулируются объявлениями WS-REGION-REC и WS-POLITY-REC.
 78 MARKET-REC-LEN            VALUE 51.
 
 *> ====================================================================
@@ -348,6 +357,11 @@ WORKING-STORAGE SECTION.
 01 WS-YEAR            PIC 9(4) VALUE 0001.
 01 WS-EOF             PIC 9    VALUE 0.
 01 WS-IDX             PIC 99.
+*> Phase 24 / Этап 1: резервные имена индексов. На Этапе 1 polity и
+*> region 1:1, всё ещё адресуются через WS-IDX. WS-PIDX/WS-RIDX —
+*> задел на Этап 2, когда политий станет больше регионов.
+01 WS-PIDX            PIC 99.
+01 WS-RIDX            PIC 99.
 01 WS-NIDX            PIC 9.
 01 WS-MIDX            PIC 99.
 01 WS-NBREG           PIC 99.
@@ -406,6 +420,16 @@ WORKING-STORAGE SECTION.
    05 WS-NAME              PIC X(20).
    05 WS-TERRAIN           PIC X(10).
    05 WS-CLIMATE           PIC X(10).
+   05 WS-PRIMARY-GOOD      PIC X(15).
+   05 WS-NEIGHBOR-1        PIC 99.
+   05 WS-NEIGHBOR-2        PIC 99.
+   05 WS-NEIGHBOR-3        PIC 99.
+
+*> Phase 24 — Этап 1. WS-POLITIES — политический слой, отделён от
+*> географии. На Этапе 1 polity[i] всегда живёт в region[i], имена
+*> синхронизированы (WS-POLITY-NAME = WS-NAME).
+01 WS-POLITIES OCCURS 10 TIMES.
+   05 WS-POLITY-NAME       PIC X(20).
    05 WS-POPULATION        PIC 9(8).
    05 WS-PEASANTS-PCT      PIC 9(3).
    05 WS-ARTISANS-PCT      PIC 9(3).
@@ -413,7 +437,6 @@ WORKING-STORAGE SECTION.
    05 WS-NOBILITY-PCT      PIC 9(3).
    05 WS-CLERGY-PCT        PIC 9(3).
    05 WS-PROD-MODE         PIC X(15).
-   05 WS-PRIMARY-GOOD      PIC X(15).
    05 WS-LABOUR-HOURS      PIC 9(10).
    05 WS-OUTPUT-VALUE      PIC 9(10)V99.
    05 WS-SURPLUS-RATE      PIC 9(3)V99.
@@ -426,9 +449,6 @@ WORKING-STORAGE SECTION.
    05 WS-COLLAPSE-TIMER    PIC 9(3).
    05 WS-WAR-YEAR          PIC 9(3).
    05 WS-WAR-TYPE          PIC X(10).
-   05 WS-NEIGHBOR-1        PIC 99.
-   05 WS-NEIGHBOR-2        PIC 99.
-   05 WS-NEIGHBOR-3        PIC 99.
 *> Phase 9 — лица и сознание
    05 WS-RULER-NAME        PIC X(20).
    05 WS-RULER-AGE         PIC 9(2).
@@ -676,74 +696,101 @@ LOAD-PERSISTED-PRICES.
     END-IF.
 
 READ-WORLD.
-    OPEN INPUT WORLD-FILE
+*>  Phase 24 — Этап 1: чтение двух файлов параллельно (regions.dat
+*>  и polities.dat). Цикл общий — на Этапе 1 индекс politiy = индекс
+*>  region. На Этапе 2+ цикл по политиям расщепится отдельно.
+    OPEN INPUT REGIONS-FILE
+    OPEN INPUT POLITIES-FILE
     MOVE 0 TO WS-EOF
     PERFORM VARYING WS-IDX FROM 1 BY 1
             UNTIL WS-IDX > REGION-COUNT OR WS-EOF = 1
-        READ WORLD-FILE INTO WS-WORLD-REC
+        READ REGIONS-FILE INTO WS-REGION-REC
             AT END     MOVE 1 TO WS-EOF
-            NOT AT END PERFORM PARSE-RECORD
+            NOT AT END PERFORM PARSE-REGION-RECORD
         END-READ
+        IF WS-EOF = 0
+            READ POLITIES-FILE INTO WS-POLITY-REC
+                AT END     MOVE 1 TO WS-EOF
+                NOT AT END PERFORM PARSE-POLITY-RECORD
+            END-READ
+        END-IF
     END-PERFORM
-    CLOSE WORLD-FILE.
+    CLOSE REGIONS-FILE
+    CLOSE POLITIES-FILE.
 
-PARSE-RECORD.
-*> Текстовые поля: прямое копирование
-    MOVE WS-WORLD-REC(1:20)  TO WS-NAME(WS-IDX)
-    MOVE WS-WORLD-REC(21:10) TO WS-TERRAIN(WS-IDX)
-    MOVE WS-WORLD-REC(31:10) TO WS-CLIMATE(WS-IDX)
-    MOVE WS-WORLD-REC(64:15) TO WS-PROD-MODE(WS-IDX)
-    MOVE WS-WORLD-REC(79:15) TO WS-PRIMARY-GOOD(WS-IDX)
+PARSE-REGION-RECORD.
+*>  Геофон. Layout regions.dat (1-indexed COBOL):
+*>    NAME        @ 1   len 20
+*>    TERRAIN     @ 21  len 10
+*>    CLIMATE     @ 31  len 10
+*>    PRIMARY-GOOD @ 41 len 15
+*>    NEIGHBOR-1  @ 56  len 2
+*>    NEIGHBOR-2  @ 58  len 2
+*>    NEIGHBOR-3  @ 60  len 2
+    MOVE WS-REGION-REC(1:20)                   TO WS-NAME(WS-IDX)
+    MOVE WS-REGION-REC(21:10)                  TO WS-TERRAIN(WS-IDX)
+    MOVE WS-REGION-REC(31:10)                  TO WS-CLIMATE(WS-IDX)
+    MOVE WS-REGION-REC(41:15)                  TO WS-PRIMARY-GOOD(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-REGION-REC(56:2))  TO WS-NEIGHBOR-1(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-REGION-REC(58:2))  TO WS-NEIGHBOR-2(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-REGION-REC(60:2))  TO WS-NEIGHBOR-3(WS-IDX).
 
-*> Целые числовые поля. Раскладка после Phase-7 уборки:
-*>   AT-WAR-WITH    @ 129 len 2
-*>   COLLAPSE-TIMER @ 131 len 3   (новое)
-*>   WAR-YEAR       @ 134 len 3
-*>   WAR-TYPE       @ 137 len 10
-*>   NEIGHBOR-1     @ 147 len 2
-*>   NEIGHBOR-2     @ 149 len 2
-*>   NEIGHBOR-3     @ 151 len 2
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(41:8))   TO WS-POPULATION(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(49:3))   TO WS-PEASANTS-PCT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(52:3))   TO WS-ARTISANS-PCT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(55:3))   TO WS-MERCHANTS-PCT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(58:3))   TO WS-NOBILITY-PCT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(61:3))   TO WS-CLERGY-PCT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(94:10))  TO WS-LABOUR-HOURS(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(121:3))  TO WS-CLASS-TENSION(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(124:5))  TO WS-MILITARY-STRENGTH(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(129:2))  TO WS-AT-WAR-WITH(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(131:3))  TO WS-COLLAPSE-TIMER(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(134:3))  TO WS-WAR-YEAR(WS-IDX)
-    MOVE WS-WORLD-REC(137:10)                  TO WS-WAR-TYPE(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(147:2))  TO WS-NEIGHBOR-1(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(149:2))  TO WS-NEIGHBOR-2(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(151:2))  TO WS-NEIGHBOR-3(WS-IDX)
-*>  Phase 9 — правитель и сознание (1-indexed COBOL смещения)
-    MOVE WS-WORLD-REC(153:20)                  TO WS-RULER-NAME(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(173:2))  TO WS-RULER-AGE(WS-IDX)
-    MOVE WS-WORLD-REC(175:10)                  TO WS-RULER-TRAIT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(185:3))  TO WS-RULER-REIGN(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(188:3))  TO WS-CONSCIOUSNESS(WS-IDX)
-*>  Phase 15 — культурные векторы (188+3=191, 194, 197 — 1-indexed COBOL)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(191:3))  TO WS-CULT-MIL(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(194:3))  TO WS-CULT-MERC(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(197:3))  TO WS-CULT-REL(WS-IDX)
-*>  Phase 21 — счётчик лет в эпохе (200..203, 1-indexed COBOL).
-*>  Backwards-compat: старые saves без поля парсятся как 0; в этом случае
-*>  TICK-MODE-YEARS быстро их «прогреет» до правдоподобных значений.
-    IF FUNCTION LENGTH(FUNCTION TRIM(WS-WORLD-REC)) >= 203
-        MOVE FUNCTION NUMVAL(WS-WORLD-REC(200:4)) TO WS-MODE-YEARS(WS-IDX)
-    ELSE
-        MOVE 0 TO WS-MODE-YEARS(WS-IDX)
-    END-IF
-
-*> Десятичные поля хранятся без точки — читаем как целое, делим на 100
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(104:5))  TO WS-TMP5
+PARSE-POLITY-RECORD.
+*>  Политический слой. Layout polities.dat (1-indexed COBOL):
+*>    POLITY-NAME    @ 1   len 20
+*>    POPULATION     @ 21  len 8
+*>    PEASANTS-PCT   @ 29  len 3
+*>    ARTISANS-PCT   @ 32  len 3
+*>    MERCHANTS-PCT  @ 35  len 3
+*>    NOBILITY-PCT   @ 38  len 3
+*>    CLERGY-PCT     @ 41  len 3
+*>    PROD-MODE      @ 44  len 15
+*>    LABOUR-HOURS   @ 59  len 10
+*>    SURPLUS-RATE   @ 69  len 5    (×100, делим)
+*>    CAPITAL-STOCK  @ 74  len 12   (×100, делим)
+*>    CLASS-TENSION  @ 86  len 3
+*>    MILITARY-STR   @ 89  len 5
+*>    AT-WAR-WITH    @ 94  len 2
+*>    COLLAPSE-TIMER @ 96  len 3
+*>    WAR-YEAR       @ 99  len 3
+*>    WAR-TYPE       @ 102 len 10
+*>    RULER-NAME     @ 112 len 20
+*>    RULER-AGE      @ 132 len 2
+*>    RULER-TRAIT    @ 134 len 10
+*>    RULER-REIGN    @ 144 len 3
+*>    CONSCIOUSNESS  @ 147 len 3
+*>    CULT-MIL       @ 150 len 3
+*>    CULT-MERC      @ 153 len 3
+*>    CULT-REL       @ 156 len 3
+*>    MODE-YEARS     @ 159 len 4   = 162 байт (запись)
+    MOVE WS-POLITY-REC(1:20)                   TO WS-POLITY-NAME(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(21:8))  TO WS-POPULATION(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(29:3))  TO WS-PEASANTS-PCT(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(32:3))  TO WS-ARTISANS-PCT(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(35:3))  TO WS-MERCHANTS-PCT(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(38:3))  TO WS-NOBILITY-PCT(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(41:3))  TO WS-CLERGY-PCT(WS-IDX)
+    MOVE WS-POLITY-REC(44:15)                  TO WS-PROD-MODE(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(59:10)) TO WS-LABOUR-HOURS(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(69:5))  TO WS-TMP5
     COMPUTE WS-SURPLUS-RATE(WS-IDX)  = WS-TMP5 / 100
-
-    MOVE FUNCTION NUMVAL(WS-WORLD-REC(109:12)) TO WS-TMP12
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(74:12)) TO WS-TMP12
     COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-TMP12 / 100
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(86:3))  TO WS-CLASS-TENSION(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(89:5))  TO WS-MILITARY-STRENGTH(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(94:2))  TO WS-AT-WAR-WITH(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(96:3))  TO WS-COLLAPSE-TIMER(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(99:3))  TO WS-WAR-YEAR(WS-IDX)
+    MOVE WS-POLITY-REC(102:10)                 TO WS-WAR-TYPE(WS-IDX)
+    MOVE WS-POLITY-REC(112:20)                 TO WS-RULER-NAME(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(132:2)) TO WS-RULER-AGE(WS-IDX)
+    MOVE WS-POLITY-REC(134:10)                 TO WS-RULER-TRAIT(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(144:3)) TO WS-RULER-REIGN(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(147:3)) TO WS-CONSCIOUSNESS(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(150:3)) TO WS-CULT-MIL(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(153:3)) TO WS-CULT-MERC(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(156:3)) TO WS-CULT-REL(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(159:4)) TO WS-MODE-YEARS(WS-IDX).
 
     MOVE 0         TO WS-OUTPUT-VALUE(WS-IDX)
     MOVE 0         TO WS-WAGE-FUND(WS-IDX)
@@ -2222,6 +2269,9 @@ ACCUMULATE-ALL.
                     MOVE WS-WAR-PEACE     TO WS-WAR-TYPE(WS-IDX)
                     MOVE 0                TO WS-AT-WAR-WITH(WS-IDX)
                     MOVE CONSCIOUSNESS-INIT TO WS-CONSCIOUSNESS(WS-IDX)
+*>                  Phase 24 — Этап 1: возрождение использует то же имя
+*>                  что у региона (пока polity=region 1:1).
+                    MOVE WS-NAME(WS-IDX)  TO WS-POLITY-NAME(WS-IDX)
                     MOVE WS-YEAR          TO WS-CHRON-YEAR
                     MOVE "REBIRTH        " TO WS-CHRON-TYPE
                     MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
@@ -2321,13 +2371,15 @@ CALC-MILITARY.
     END-PERFORM.
 
 WRITE-WORLD.
-*> Перезаписываем world.dat в fixed-width формате (WORLD-REC-LEN байт/строка)
-    OPEN OUTPUT WORLD-FILE
+*>  Phase 24 — Этап 1: simulate переписывает только polities.dat.
+*>  regions.dat статичен — пишется один раз при world-gen и больше не
+*>  меняется (terrain/climate/neighbors не эволюционируют). Это убирает
+*>  один disk-IO/turn и явно отделяет геофон от политики.
+    OPEN OUTPUT POLITIES-FILE
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
+        MOVE SPACES TO WS-OUT-LINE
         STRING
-            WS-NAME(WS-IDX)              DELIMITED SIZE
-            WS-TERRAIN(WS-IDX)           DELIMITED SIZE
-            WS-CLIMATE(WS-IDX)           DELIMITED SIZE
+            WS-POLITY-NAME(WS-IDX)       DELIMITED SIZE
             WS-POPULATION(WS-IDX)        DELIMITED SIZE
             WS-PEASANTS-PCT(WS-IDX)      DELIMITED SIZE
             WS-ARTISANS-PCT(WS-IDX)      DELIMITED SIZE
@@ -2335,7 +2387,6 @@ WRITE-WORLD.
             WS-NOBILITY-PCT(WS-IDX)      DELIMITED SIZE
             WS-CLERGY-PCT(WS-IDX)        DELIMITED SIZE
             WS-PROD-MODE(WS-IDX)         DELIMITED SIZE
-            WS-PRIMARY-GOOD(WS-IDX)      DELIMITED SIZE
             WS-LABOUR-HOURS(WS-IDX)      DELIMITED SIZE
             WS-SURPLUS-RATE(WS-IDX)      DELIMITED SIZE
             WS-CAPITAL-STOCK(WS-IDX)     DELIMITED SIZE
@@ -2345,9 +2396,6 @@ WRITE-WORLD.
             WS-COLLAPSE-TIMER(WS-IDX)    DELIMITED SIZE
             WS-WAR-YEAR(WS-IDX)          DELIMITED SIZE
             WS-WAR-TYPE(WS-IDX)          DELIMITED SIZE
-            WS-NEIGHBOR-1(WS-IDX)        DELIMITED SIZE
-            WS-NEIGHBOR-2(WS-IDX)        DELIMITED SIZE
-            WS-NEIGHBOR-3(WS-IDX)        DELIMITED SIZE
             WS-RULER-NAME(WS-IDX)        DELIMITED SIZE
             WS-RULER-AGE(WS-IDX)         DELIMITED SIZE
             WS-RULER-TRAIT(WS-IDX)       DELIMITED SIZE
@@ -2359,13 +2407,9 @@ WRITE-WORLD.
             WS-MODE-YEARS(WS-IDX)        DELIMITED SIZE
             INTO WS-OUT-LINE
         END-STRING
-*>      Дрейф формата: длина строки превышает заявленную → лог в stderr
-        IF FUNCTION LENGTH(FUNCTION TRIM(WS-OUT-LINE)) > WORLD-REC-LEN
-            DISPLAY "WARN: world.dat record drift" UPON SYSERR
-        END-IF
-        WRITE WS-WORLD-REC FROM WS-OUT-LINE
+        WRITE WS-POLITY-REC FROM WS-OUT-LINE
     END-PERFORM
-    CLOSE WORLD-FILE.
+    CLOSE POLITIES-FILE.
 
 WRITE-CHRONICLE.
 *> Очищаем буфера ПЕРЕД STRING, иначе хвост старого сообщения протекает.
