@@ -1,9 +1,10 @@
 // Смещения полей в world.dat (0-indexed, fixed-width, LINE SEQUENTIAL).
 // Десятичные поля хранятся без точки: PIC 9(3)V99 → 5 цифр, делить на 100.0.
-// Длина строки: 199 байт (Phase 15).
+// Длина строки: 203 байт (Phase 21).
 //
 // Phase 9: ruler (имя/возраст/трейт/правление) и consciousness.
 // Phase 15: 3 culture vectors (militaristic / mercantile / religious), 0..100.
+// Phase 21: WS-MODE-YEARS — счётчик ходов в текущей эпохе (минимальная выдержка).
 //
 // | Поле           | Старт | Длина |
 // |----------------|-------|-------|
@@ -38,6 +39,7 @@
 // | CULTURE_MIL    | 190   |   3   | ← Phase 15
 // | CULTURE_MERC   | 193   |   3   | ← Phase 15
 // | CULTURE_REL    | 196   |   3   | ← Phase 15
+// | MODE_YEARS     | 199   |   4   | ← Phase 21
 
 #[derive(Debug, Clone)]
 pub struct Region {
@@ -73,6 +75,8 @@ pub struct Region {
     pub culture_mil: u8,
     pub culture_merc: u8,
     pub culture_rel: u8,
+    // Phase 21
+    pub mode_years: u16,
 }
 
 pub fn parse_world(path: &str) -> Vec<Region> {
@@ -133,6 +137,7 @@ pub fn parse_world(path: &str) -> Vec<Region> {
                 culture_mil:   num(190, 3) as u8,
                 culture_merc:  num(193, 3) as u8,
                 culture_rel:   num(196, 3) as u8,
+                mode_years:    num(199, 4) as u16,
             }
         })
         .collect()

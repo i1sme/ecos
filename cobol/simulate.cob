@@ -23,7 +23,7 @@ FILE-CONTROL.
 DATA DIVISION.
 FILE SECTION.
 FD WORLD-FILE.
-01 WS-WORLD-REC   PIC X(200).
+01 WS-WORLD-REC   PIC X(204).
 
 FD YEAR-FILE.
 01 WS-YEAR-REC    PIC X(10).
@@ -49,7 +49,7 @@ WORKING-STORAGE SECTION.
 *> Размерности
 78 REGION-COUNT             VALUE 10.
 78 MARKET-COUNT             VALUE 8.
-78 WORLD-REC-LEN             VALUE 199.
+78 WORLD-REC-LEN             VALUE 203.
 78 MARKET-REC-LEN            VALUE 51.
 
 *> ====================================================================
@@ -71,8 +71,9 @@ WORKING-STORAGE SECTION.
 78 REVOLUTION-SCALE-PERMIL   VALUE 25.
 
 *> Mode-shift: 30% базовая при условиях
-78 MODE-SHIFT-BASE-PERMIL    VALUE 300.
-78 MODE-SHIFT-CAP-PERMIL     VALUE 700.
+*> Phase 21 — base 300→60, cap 700→200 (×5 замедление эпох)
+78 MODE-SHIFT-BASE-PERMIL    VALUE 60.
+78 MODE-SHIFT-CAP-PERMIL     VALUE 200.
 
 *> Рыночный кризис: 0 при ratio=1.0, 30% при 1.2, 80% при 1.5+
 78 CRISIS-PROB-CAP-PERMIL    VALUE 800.
@@ -174,12 +175,21 @@ WORKING-STORAGE SECTION.
 *> Сознание
 78 CONSCIOUSNESS-MAX         VALUE 100.
 78 CONSCIOUSNESS-INIT        VALUE 10.
-78 CONSCIOUSNESS-MERCANTILE  VALUE 1.
-78 CONSCIOUSNESS-PROTO-IND   VALUE 2.
-78 CONSCIOUSNESS-URBAN-MIN   VALUE 30.    *> artisans_pct >= 30 → +1
-78 CONSCIOUSNESS-SPREAD      VALUE 3.     *> +3 за соседа с революцией
-78 CONSCIOUSNESS-AFTER-REV   VALUE 5.     *> -5 после собственной революции
-78 CONSCIOUSNESS-AFTER-CLASS VALUE 2.     *> -2 после class-war
+*> Phase 22 — рост сознания замедлен в 2-3×.
+*> Маркс: классовое сознание формируется десятилетиями через борьбу,
+*> а не «само собой растёт» от смены способа производства. Более того,
+*> без active носителя (artisans+merchants ≥ 30%) рост не возможен —
+*> крестьянские империи не имеют пролетариата чтобы вырастить сознание.
+78 CONSCIOUSNESS-MERCANTILE  VALUE 0.     *> mode сам по себе уже не растит
+78 CONSCIOUSNESS-PROTO-IND   VALUE 1.
+78 CONSCIOUSNESS-INDUSTRIAL  VALUE 1.
+78 CONSCIOUSNESS-IMPERIAL    VALUE 1.
+78 CONSCIOUSNESS-URBAN-MIN   VALUE 30.    *> artisans+merchants ≥ 30 → +1
+78 CONSCIOUSNESS-SPREAD      VALUE 1.     *> +1 за соседа (было +3)
+78 CONSCIOUSNESS-SPREAD-MIN  VALUE 20.    *> своё ≥ 20 чтобы быть восприимчивым
+78 CONSCIOUSNESS-DECAY-INTERVAL VALUE 5.  *> каждые 5 ходов −1 без подкрепления
+78 CONSCIOUSNESS-AFTER-REV   VALUE 25.    *> -25 после своей революции
+78 CONSCIOUSNESS-AFTER-CLASS VALUE 5.     *> -5 после class-war (репрессия)
 
 *> Отношения
 78 RELATIONS-WAR-START       VALUE 30.    *> -30 при объявлении войны
@@ -273,23 +283,33 @@ WORKING-STORAGE SECTION.
 78 COLLAPSED-LABOUR         VALUE 50000.
 
 *> Накопление → переход способа производства (расширено в Phase 11)
+*> Phase 21 — базовые ставки понижены в 3-5×, добавлены минимальные
+*> длительности эпох (ходы в текущем модусе перед попыткой перехода).
+*> Цель: эпоха ощущается, а не пробегает за 5 ходов.
 78 SLAVE-POP-MIN            VALUE 200000.
 78 SLAVE-CAPITAL-MIN        VALUE 5000.
-78 SLAVE-BASE-PERMIL        VALUE 30.
+78 SLAVE-BASE-PERMIL        VALUE 10.
 78 FEUDAL-CAPITAL-MIN       VALUE 50000.
 78 FEUDAL-NOBILITY-MIN      VALUE 5.
-78 FEUDAL-BASE-PERMIL       VALUE 50.
+78 FEUDAL-BASE-PERMIL       VALUE 15.
 78 MERCANTILE-CAPITAL-MIN   VALUE 1000000.
 78 MERCANTILE-MERCHANT-MIN  VALUE 10.
 78 MERCANTILE-ARTISAN-ALT   VALUE 25.
+78 MERCANTILE-BASE-PERMIL   VALUE 60.
 78 PROTO-IND-CAPITAL-MIN    VALUE 5000000.
 78 PROTO-IND-ARTISAN-MIN    VALUE 20.
+78 PROTO-IND-BASE-PERMIL    VALUE 60.
 78 INDUSTRIAL-CAPITAL-MIN   VALUE 20000000.
 78 INDUSTRIAL-ARTISAN-MIN   VALUE 30.
-78 INDUSTRIAL-BASE-PERMIL   VALUE 250.
+78 INDUSTRIAL-BASE-PERMIL   VALUE 50.
 78 IMPERIAL-CAPITAL-MIN     VALUE 100000000.
 78 IMPERIAL-MERCHANT-MIN    VALUE 15.
-78 IMPERIAL-BASE-PERMIL     VALUE 200.
+78 IMPERIAL-BASE-PERMIL     VALUE 40.
+
+*> Phase 22 — EPOCH-MIN-* убраны: «выдержка эпохи» создавала ощущение
+*> принуждения. Темп задают сознание (revolution-путь) и накопление
+*> капитала (organic-путь). WS-MODE-YEARS остаётся как информационный
+*> счётчик в UI и как референс для будущих механик (post-rev cooldown).
 78 IMPERIAL-WAR-BASE-PERMIL VALUE 350.
 78 IMPERIAL-WAR-CAP-PERMIL  VALUE 600.
 78 IMPERIAL-WAR-TRADE-MIN   VALUE 500.   *> |trade_balance| > 500 (negative)
@@ -346,7 +366,7 @@ WORKING-STORAGE SECTION.
 01 WS-SURPLUS-VAL     PIC S9(12)V99.
 01 WS-NB-EXPORT       PIC S9(12)V99.
 
-01 WS-OUT-LINE        PIC X(200).
+01 WS-OUT-LINE        PIC X(204).
 
 *> Chronicle builder
 01 WS-CHRON-YEAR      PIC 9(4).
@@ -358,6 +378,7 @@ WORKING-STORAGE SECTION.
 *> Социальная динамика
 01 WS-HUNGER-FLAGS    OCCURS 10 TIMES PIC 9.   *> 0=ok, 1=mild, 2=severe
 01 WS-WORKERS         PIC 9(10).
+01 WS-WORKER-PCT      PIC 9(3).      *> artisans+merchants для consciousness
 01 WS-SUBSIST-NEED    PIC 9(12).
 01 WS-TENSION-DELTA   PIC S9(3).
 01 WS-NEW-TENSION     PIC S9(3).
@@ -418,6 +439,10 @@ WORKING-STORAGE SECTION.
    05 WS-CULT-MIL          PIC 9(3).
    05 WS-CULT-MERC         PIC 9(3).
    05 WS-CULT-REL          PIC 9(3).
+*> Phase 21 — счётчик ходов в текущем модусе.
+*> Сбрасывается на 0 при каждом mode-shift, COLLAPSE, REBIRTH.
+*> Используется как минимальная «выдержка» эпохи перед возможностью перехода.
+   05 WS-MODE-YEARS        PIC 9(4).
 
 *> Пул имён правителей и трейтов (общий с world.cob)
 01 WS-NAME-POOL.
@@ -539,6 +564,8 @@ MAIN-PARA.
     PERFORM LOAD-RELATIONS
     PERFORM LOAD-TECH
     OPEN EXTEND CHRONICLE-FILE
+*>  Phase 21 — каждый ход: возраст эпохи у живых регионов растёт на 1.
+    PERFORM TICK-MODE-YEARS
     PERFORM PRODUCE-ALL
     PERFORM MARKET-AGGREGATE
     PERFORM CHECK-CRISIS
@@ -702,6 +729,14 @@ PARSE-RECORD.
     MOVE FUNCTION NUMVAL(WS-WORLD-REC(191:3))  TO WS-CULT-MIL(WS-IDX)
     MOVE FUNCTION NUMVAL(WS-WORLD-REC(194:3))  TO WS-CULT-MERC(WS-IDX)
     MOVE FUNCTION NUMVAL(WS-WORLD-REC(197:3))  TO WS-CULT-REL(WS-IDX)
+*>  Phase 21 — счётчик лет в эпохе (200..203, 1-indexed COBOL).
+*>  Backwards-compat: старые saves без поля парсятся как 0; в этом случае
+*>  TICK-MODE-YEARS быстро их «прогреет» до правдоподобных значений.
+    IF FUNCTION LENGTH(FUNCTION TRIM(WS-WORLD-REC)) >= 203
+        MOVE FUNCTION NUMVAL(WS-WORLD-REC(200:4)) TO WS-MODE-YEARS(WS-IDX)
+    ELSE
+        MOVE 0 TO WS-MODE-YEARS(WS-IDX)
+    END-IF
 
 *> Десятичные поля хранятся без точки — читаем как целое, делим на 100
     MOVE FUNCTION NUMVAL(WS-WORLD-REC(104:5))  TO WS-TMP5
@@ -914,58 +949,78 @@ CLAMP-ALL-TENSIONS.
     END-PERFORM.
 
 CONSCIOUSNESS-ALL.
-*> Растёт от urban density / advanced mode / нестабильности соседей.
-*> Заражение: если у соседа tension >= 90, у нас +CONSCIOUSNESS-CONTAGION.
-*> COLLAPSED регионы пропускаем — у них сознание уже сброшено.
+*> Phase 22 — переписан под марксистскую логику классового сознания:
+*>  • без active носителя (artisans+merchants ≥ 30%) сознание не растёт;
+*>  • базовые ставки уменьшены вдвое-втрое относительно Phase 15;
+*>  • decay −1 каждые 5 ходов без подкрепления (как у culture);
+*>  • заражение от соседей слабее (+1 вместо +3) и требует своей основы.
+*> COLLAPSED регионы пропускаем — у них преемственность сломана.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
         IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
-            EVALUATE WS-PROD-MODE(WS-IDX)
-                WHEN WS-MODE-MERCANTILE
-                    ADD CONSCIOUSNESS-MERCANTILE
-                        TO WS-CONSCIOUSNESS(WS-IDX)
-                WHEN WS-MODE-PROTO-IND
-                    ADD CONSCIOUSNESS-PROTO-IND
-                        TO WS-CONSCIOUSNESS(WS-IDX)
-            END-EVALUATE
-            IF WS-ARTISANS-PCT(WS-IDX) >= CONSCIOUSNESS-URBAN-MIN
-                ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
-            END-IF
-*>          Phase 13: Writing (L1) +1, Printing (L2) +2.
-*>          Phase 17: L3 — Empiricism +2, Scholasticism +3, Folk Wisdom +1.
-*>          Phase 18: L4 — SciMethod ещё +1, Theology ещё +1, OralTrad ещё +1.
-            EVALUATE TRUE
-                WHEN WS-TECH-LEVEL(WS-IDX, 3) >= 3
-                    EVALUATE WS-TECH-L3-CHOICE(WS-IDX, 3)
-                        WHEN 1 ADD 2 TO WS-CONSCIOUSNESS(WS-IDX)
-                        WHEN 2 ADD 3 TO WS-CONSCIOUSNESS(WS-IDX)
-                        WHEN 3 ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
-                        WHEN OTHER ADD 2 TO WS-CONSCIOUSNESS(WS-IDX)
-                    END-EVALUATE
-                WHEN WS-TECH-LEVEL(WS-IDX, 3) >= 2
-                    ADD 2 TO WS-CONSCIOUSNESS(WS-IDX)
-                WHEN WS-TECH-LEVEL(WS-IDX, 3) >= 1
-                    ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
-            END-EVALUATE
-*>          L4 sub-tech bonus
-            IF WS-TECH-LEVEL(WS-IDX, 3) >= 4
-                EVALUATE TRUE
-                    WHEN WS-TECH-L3-CHOICE(WS-IDX, 3) = 1
-                         AND WS-TECH-L4-CHOICE(WS-IDX, 3) = 1
-*>                      SciMethod — sustained edge
-                        ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
-                    WHEN WS-TECH-L3-CHOICE(WS-IDX, 3) = 2
-                         AND WS-TECH-L4-CHOICE(WS-IDX, 3) = 1
-*>                      Theology — reinforced legitimation
-                        ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
-                    WHEN WS-TECH-L3-CHOICE(WS-IDX, 3) = 3
-                         AND WS-TECH-L4-CHOICE(WS-IDX, 3) = 1
-*>                      OralTrad — слабее, но даёт +1
-                        ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
+*>          Структурное условие: без рабочего класса (artisans+merchants
+*>          ≥ CONSCIOUSNESS-URBAN-MIN) сознание не накапливается.
+*>          В крестьянских империях оно остаётся на нуле.
+            COMPUTE WS-WORKER-PCT =
+                WS-ARTISANS-PCT(WS-IDX) + WS-MERCHANTS-PCT(WS-IDX)
+            IF WS-WORKER-PCT >= CONSCIOUSNESS-URBAN-MIN
+*>              Бонус от способа производства — теперь только начиная с
+*>              PROTO-IND (мануфактура создаёт скопление пролетариата).
+*>              MERCANTILE сама по себе сознание не растит — для торгового
+*>              капитала сознание не его задача.
+                EVALUATE WS-PROD-MODE(WS-IDX)
+                    WHEN WS-MODE-PROTO-IND
+                        ADD CONSCIOUSNESS-PROTO-IND
+                            TO WS-CONSCIOUSNESS(WS-IDX)
+                    WHEN WS-MODE-INDUSTRIAL
+                        ADD CONSCIOUSNESS-INDUSTRIAL
+                            TO WS-CONSCIOUSNESS(WS-IDX)
+                    WHEN WS-MODE-IMPERIAL
+                        ADD CONSCIOUSNESS-IMPERIAL
+                            TO WS-CONSCIOUSNESS(WS-IDX)
                 END-EVALUATE
+*>              Knowledge tech даёт сознанию материал — но в разы слабее
+*>              чем до Phase 22. Books и наука помогают, но не «капают»
+*>              сознание сами.
+                EVALUATE TRUE
+                    WHEN WS-TECH-LEVEL(WS-IDX, 3) >= 3
+                        EVALUATE WS-TECH-L3-CHOICE(WS-IDX, 3)
+                            WHEN 1 ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
+                            WHEN 2 ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
+                            WHEN 3 ADD 0 TO WS-CONSCIOUSNESS(WS-IDX)
+                            WHEN OTHER ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
+                        END-EVALUATE
+                    WHEN WS-TECH-LEVEL(WS-IDX, 3) >= 2
+*>                      Printing — раз в 2 хода даёт +1 (MOD трюк)
+                        IF FUNCTION MOD(WS-YEAR, 2) = 0
+                            ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
+                        END-IF
+                END-EVALUATE
+*>              L4 KNOW: только SciMethod даёт сознательный edge,
+*>              Theology — обратное (легитимация — снижение давления).
+                IF WS-TECH-LEVEL(WS-IDX, 3) >= 4
+                   AND WS-TECH-L3-CHOICE(WS-IDX, 3) = 1
+                   AND WS-TECH-L4-CHOICE(WS-IDX, 3) = 1
+                   AND FUNCTION MOD(WS-YEAR, 2) = 0
+                    ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
+                END-IF
+*>              Заражение от соседей с революционной обстановкой —
+*>              слабее (+1) и требует своей основы (без класса нет
+*>              восприимчивости).
+                IF WS-CONSCIOUSNESS(WS-IDX) >= CONSCIOUSNESS-SPREAD-MIN
+                    PERFORM CONSCIOUSNESS-CONTAGION
+                        VARYING WS-NIDX FROM 1 BY 1
+                        UNTIL WS-NIDX > 3
+                END-IF
             END-IF
-*>          Заражение от напряжённых соседей (proxy: tension >= 90)
-            PERFORM CONSCIOUSNESS-CONTAGION VARYING WS-NIDX FROM 1 BY 1
-                UNTIL WS-NIDX > 3
+*>          Decay — каждые N ходов −1 у всех ненулевых.
+*>          Без active поддержки сознание угасает (период реакции,
+*>          смена поколений, забвение опыта борьбы).
+            IF FUNCTION MOD(WS-YEAR, CONSCIOUSNESS-DECAY-INTERVAL) = 0
+                IF WS-CONSCIOUSNESS(WS-IDX) > 0
+                    SUBTRACT 1 FROM WS-CONSCIOUSNESS(WS-IDX)
+                END-IF
+            END-IF
+*>          Cap
             IF WS-CONSCIOUSNESS(WS-IDX) > CONSCIOUSNESS-MAX
                 MOVE CONSCIOUSNESS-MAX TO WS-CONSCIOUSNESS(WS-IDX)
             END-IF
@@ -1616,6 +1671,7 @@ COLLAPSE-ONE.
             / 100
         PERFORM DISTRIBUTE-REFUGEES
         MOVE WS-MODE-COLLAPSED TO WS-PROD-MODE(WS-COLLAPSE-CANDIDATE)
+        MOVE 0                 TO WS-MODE-YEARS(WS-COLLAPSE-CANDIDATE)
         MOVE COLLAPSED-POP     TO WS-POPULATION(WS-COLLAPSE-CANDIDATE)
         MOVE COLLAPSED-LABOUR  TO WS-LABOUR-HOURS(WS-COLLAPSE-CANDIDATE)
         MOVE 0                 TO WS-CAPITAL-STOCK(WS-COLLAPSE-CANDIDATE)
@@ -1894,23 +1950,73 @@ REVOLUTION.
 *>  и фантомная пустая MODE-SHIFT запись попадёт в хронику.
     PERFORM WRITE-CHRONICLE
 
-*>  Смена способа производства если условия созрели
-    IF WS-PROD-MODE(WS-IDX) = WS-MODE-FEUDAL
-       AND WS-MERCHANTS-PCT(WS-IDX) > WS-ARTISANS-PCT(WS-IDX)
-        MOVE WS-MODE-MERCANTILE TO WS-PROD-MODE(WS-IDX)
-    END-IF
-*>  Phase 15 — революция в IMPERIAL ведёт к SOCIALIST (смена общественной формации)
-    IF WS-PROD-MODE(WS-IDX) = WS-MODE-IMPERIAL
-        MOVE WS-MODE-SOCIALIST TO WS-PROD-MODE(WS-IDX)
-        MOVE 5.00 TO WS-SURPLUS-RATE(WS-IDX)
-*>      Запись отдельного события «октябрьская революция»
-        MOVE WS-YEAR             TO WS-CHRON-YEAR
-        MOVE "MODE-SHIFT     "   TO WS-CHRON-TYPE
-        MOVE WS-NAME(WS-IDX)     TO WS-CHRON-RGON
-        MOVE "Imperial -> Socialist. Workers control means of production."
-            TO WS-CHRON-DESC
-        PERFORM WRITE-CHRONICLE
-    END-IF
+*>  Phase 23 — революция = прорывной путь mode-shift через классовое
+*>  сознание (наряду с органическим путём через ACCUMULATE-ALL/капитал).
+*>  Каждая революция в созревшем регионе двигает эпоху на ступень.
+*>  Условия класса требуются — без рабочего ядра прорыв не закрепляется.
+    EVALUATE WS-PROD-MODE(WS-IDX)
+        WHEN WS-MODE-SLAVE
+*>          Античная революция: восстание рабов и колонов, отмена
+*>          рабовладения. Требование — есть зачаточное городское ядро.
+            IF WS-ARTISANS-PCT(WS-IDX) + WS-MERCHANTS-PCT(WS-IDX) >= 20
+                MOVE WS-MODE-FEUDAL    TO WS-PROD-MODE(WS-IDX)
+                MOVE 0                 TO WS-MODE-YEARS(WS-IDX)
+                MOVE WS-YEAR           TO WS-CHRON-YEAR
+                MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
+                MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+                MOVE "Slave -> Feudal. Slaves rise, antiquity falls."
+                    TO WS-CHRON-DESC
+                PERFORM WRITE-CHRONICLE
+            END-IF
+        WHEN WS-MODE-FEUDAL
+*>          Буржуазная революция первой волны: торговцы у власти.
+            IF WS-MERCHANTS-PCT(WS-IDX) > WS-ARTISANS-PCT(WS-IDX)
+                MOVE WS-MODE-MERCANTILE TO WS-PROD-MODE(WS-IDX)
+                MOVE 0 TO WS-MODE-YEARS(WS-IDX)
+            END-IF
+        WHEN WS-MODE-MERCANTILE
+*>          Буржуазная революция мануфактурного типа — 1789, 1848.
+*>          Артизаны (городские мастеровые) ведущая сила, но плодами
+*>          пользуется торговый капитал → переходим в PROTO-IND.
+            IF WS-ARTISANS-PCT(WS-IDX) >= 25
+                MOVE WS-MODE-PROTO-IND TO WS-PROD-MODE(WS-IDX)
+                MOVE 0                 TO WS-MODE-YEARS(WS-IDX)
+                MOVE WS-YEAR           TO WS-CHRON-YEAR
+                MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
+                MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+                MOVE "Mercantile -> Proto-Industrial. Bourgeois revolution."
+                    TO WS-CHRON-DESC
+                PERFORM WRITE-CHRONICLE
+            END-IF
+        WHEN WS-MODE-PROTO-IND
+*>          Рабочее движение XIX в.: фабричный пролетариат прорывает
+*>          мануфактурный потолок → INDUSTRIAL.
+            IF WS-ARTISANS-PCT(WS-IDX) >= 30
+                MOVE WS-MODE-INDUSTRIAL TO WS-PROD-MODE(WS-IDX)
+                MOVE 0                  TO WS-MODE-YEARS(WS-IDX)
+                MOVE WS-YEAR            TO WS-CHRON-YEAR
+                MOVE "MODE-SHIFT     "  TO WS-CHRON-TYPE
+                MOVE WS-NAME(WS-IDX)    TO WS-CHRON-RGON
+                MOVE "Proto-Ind -> Industrial. Workers' movement breaks through."
+                    TO WS-CHRON-DESC
+                PERFORM WRITE-CHRONICLE
+            END-IF
+        WHEN WS-MODE-IMPERIAL
+*>          Социалистическая революция (Phase 15) — пролетариат свергает
+*>          финансовый капитал. SOCIALIST с пониженной нормой прибавочной.
+            MOVE WS-MODE-SOCIALIST  TO WS-PROD-MODE(WS-IDX)
+            MOVE 0                  TO WS-MODE-YEARS(WS-IDX)
+            MOVE 5.00               TO WS-SURPLUS-RATE(WS-IDX)
+            MOVE WS-YEAR            TO WS-CHRON-YEAR
+            MOVE "MODE-SHIFT     "  TO WS-CHRON-TYPE
+            MOVE WS-NAME(WS-IDX)    TO WS-CHRON-RGON
+            MOVE "Imperial -> Socialist. Workers control means of production."
+                TO WS-CHRON-DESC
+            PERFORM WRITE-CHRONICLE
+*>      INDUSTRIAL → IMPERIAL не делается через революцию. Империализм
+*>      по Ленину — органический исход концентрации финансового капитала,
+*>      а не классовый прорыв.
+    END-EVALUATE
 
 *>  Сознание сбрасывается — цикл начинается заново.
     IF WS-CONSCIOUSNESS(WS-IDX) >= CONSCIOUSNESS-AFTER-REV
@@ -1929,8 +2035,8 @@ ACCUMULATE-ALL.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
         EVALUATE WS-PROD-MODE(WS-IDX)
             WHEN WS-MODE-PRIMITIVE
-*>              PRIMITIVE → SLAVE. Государство возникает при достаточной массе
-*>              населения и минимальном излишке. Медленно — base 30‰.
+*>              PRIMITIVE → SLAVE. Phase 22: убрана искусственная EPOCH-MIN
+*>              выдержка — темп задают сознание, культура и накопление.
                 IF WS-POPULATION(WS-IDX) > SLAVE-POP-MIN
                    AND WS-CAPITAL-STOCK(WS-IDX) > SLAVE-CAPITAL-MIN
                     MOVE SLAVE-BASE-PERMIL TO WS-PROB-PERMIL
@@ -1947,6 +2053,7 @@ ACCUMULATE-ALL.
                     PERFORM ROLL-EVENT
                     IF WS-EVENT-FIRES = 1
                         MOVE WS-MODE-SLAVE   TO WS-PROD-MODE(WS-IDX)
+                        MOVE 0               TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR         TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
                         MOVE WS-NAME(WS-IDX) TO WS-CHRON-RGON
@@ -1956,7 +2063,7 @@ ACCUMULATE-ALL.
                     END-IF
                 END-IF
             WHEN WS-MODE-SLAVE
-*>              SLAVE → FEUDAL. Падение античного порядка, манориальная аграрность.
+*>              SLAVE → FEUDAL. Условия: capital + знать.
                 IF WS-CAPITAL-STOCK(WS-IDX) > FEUDAL-CAPITAL-MIN
                    AND WS-NOBILITY-PCT(WS-IDX) >= FEUDAL-NOBILITY-MIN
                     MOVE FEUDAL-BASE-PERMIL TO WS-PROB-PERMIL
@@ -1971,6 +2078,7 @@ ACCUMULATE-ALL.
                     PERFORM ROLL-EVENT
                     IF WS-EVENT-FIRES = 1
                         MOVE WS-MODE-FEUDAL  TO WS-PROD-MODE(WS-IDX)
+                        MOVE 0               TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR         TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
                         MOVE WS-NAME(WS-IDX) TO WS-CHRON-RGON
@@ -1980,8 +2088,7 @@ ACCUMULATE-ALL.
                     END-IF
                 END-IF
             WHEN WS-MODE-FEUDAL
-*>              Условия (capital + класс) необходимы, но переход не мгновенный.
-*>              Базовый шанс 30%, плюс масштаб от превышения порога. Cap 70%.
+*>              FEUDAL → MERCANTILE. Условия (capital + класс) необходимы.
                 IF WS-CAPITAL-STOCK(WS-IDX) > MERCANTILE-CAPITAL-MIN
                    AND (WS-MERCHANTS-PCT(WS-IDX) >= MERCANTILE-MERCHANT-MIN
                         OR WS-ARTISANS-PCT(WS-IDX) >= MERCANTILE-ARTISAN-ALT)
@@ -2002,6 +2109,7 @@ ACCUMULATE-ALL.
                     PERFORM ROLL-EVENT
                     IF WS-EVENT-FIRES = 1
                         MOVE WS-MODE-MERCANTILE TO WS-PROD-MODE(WS-IDX)
+                        MOVE 0                TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR          TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
                         MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
@@ -2011,6 +2119,7 @@ ACCUMULATE-ALL.
                     END-IF
                 END-IF
             WHEN WS-MODE-MERCANTILE
+*>              MERC → PROTO-IND. Условия: capital + ремесленники.
                 IF WS-CAPITAL-STOCK(WS-IDX) > PROTO-IND-CAPITAL-MIN
                    AND WS-ARTISANS-PCT(WS-IDX) > PROTO-IND-ARTISAN-MIN
                     COMPUTE WS-PROB-PERMIL = MODE-SHIFT-BASE-PERMIL
@@ -2030,6 +2139,7 @@ ACCUMULATE-ALL.
                     PERFORM ROLL-EVENT
                     IF WS-EVENT-FIRES = 1
                         MOVE WS-MODE-PROTO-IND TO WS-PROD-MODE(WS-IDX)
+                        MOVE 0                TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR          TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
                         MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
@@ -2054,6 +2164,7 @@ ACCUMULATE-ALL.
                     PERFORM ROLL-EVENT
                     IF WS-EVENT-FIRES = 1
                         MOVE WS-MODE-INDUSTRIAL TO WS-PROD-MODE(WS-IDX)
+                        MOVE 0                TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR          TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
                         MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
@@ -2064,9 +2175,7 @@ ACCUMULATE-ALL.
                 END-IF
             WHEN WS-MODE-INDUSTRIAL
 *>              INDUSTRIAL → IMPERIAL. Поздняя стадия (Lenin): финансовый
-*>              капитал, монополии, экспорт капитала. Условие — финансовая
-*>              буржуазия (merchants ≥ 15), не аристократия (которая после
-*>              революций = 0).
+*>              капитал, монополии, экспорт капитала.
                 IF WS-CAPITAL-STOCK(WS-IDX) > IMPERIAL-CAPITAL-MIN
                    AND WS-MERCHANTS-PCT(WS-IDX) >= IMPERIAL-MERCHANT-MIN
                     MOVE IMPERIAL-BASE-PERMIL TO WS-PROB-PERMIL
@@ -2084,6 +2193,7 @@ ACCUMULATE-ALL.
                     PERFORM ROLL-EVENT
                     IF WS-EVENT-FIRES = 1
                         MOVE WS-MODE-IMPERIAL TO WS-PROD-MODE(WS-IDX)
+                        MOVE 0                TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR          TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
                         MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
@@ -2096,6 +2206,7 @@ ACCUMULATE-ALL.
 *>          Возрождение через REBIRTH-DURATION ходов
                 IF WS-COLLAPSE-TIMER(WS-IDX) >= REBIRTH-DURATION
                     MOVE WS-MODE-FEUDAL   TO WS-PROD-MODE(WS-IDX)
+                    MOVE 0                TO WS-MODE-YEARS(WS-IDX)
                     MOVE REBIRTH-POP      TO WS-POPULATION(WS-IDX)
                     MOVE REBIRTH-LABOUR   TO WS-LABOUR-HOURS(WS-IDX)
                     MOVE REBIRTH-CAPITAL  TO WS-CAPITAL-STOCK(WS-IDX)
@@ -2245,6 +2356,7 @@ WRITE-WORLD.
             WS-CULT-MIL(WS-IDX)          DELIMITED SIZE
             WS-CULT-MERC(WS-IDX)         DELIMITED SIZE
             WS-CULT-REL(WS-IDX)          DELIMITED SIZE
+            WS-MODE-YEARS(WS-IDX)        DELIMITED SIZE
             INTO WS-OUT-LINE
         END-STRING
 *>      Дрейф формата: длина строки превышает заявленную → лог в stderr
@@ -2267,6 +2379,16 @@ WRITE-CHRONICLE.
     END-STRING
     WRITE WS-CHRON-REC FROM WS-CHRON-OUT
     MOVE SPACES TO WS-CHRON-DESC.
+
+TICK-MODE-YEARS.
+*> Phase 21. Каждый ход: счётчик ходов в текущей эпохе у живых регионов
+*> растёт на 1. COLLAPSED не считает — у них «нет эпохи» в обычном смысле,
+*> восстановление через REBIRTH сбросит счётчик в 0 заново.
+    PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
+        IF WS-PROD-MODE(WS-IDX) NOT = WS-MODE-COLLAPSED
+            ADD 1 TO WS-MODE-YEARS(WS-IDX)
+        END-IF
+    END-PERFORM.
 
 AGE-RULERS.
 *> Каждый ход: правитель стареет на 1, продолжительность правления +1.
@@ -3270,9 +3392,10 @@ PICK-INNOVATION.
                 PERFORM WRITE-CHRONICLE
             END-IF
         WHEN WS-RAND-INT < 400
-*>          PRINTING-PRESS: KNOW ≥ 2 → +20 consciousness, +5 каждому соседу
+*>          PRINTING-PRESS: KNOW ≥ 2 → +8 consciousness, +2 каждому соседу
+*>          (Phase 22: одноразовый buff не должен разрушать новый темп.)
             IF WS-TECH-LEVEL(WS-IDX, 3) >= 2
-                ADD 20 TO WS-CONSCIOUSNESS(WS-IDX)
+                ADD 8 TO WS-CONSCIOUSNESS(WS-IDX)
                 IF WS-CONSCIOUSNESS(WS-IDX) > CONSCIOUSNESS-MAX
                     MOVE CONSCIOUSNESS-MAX TO WS-CONSCIOUSNESS(WS-IDX)
                 END-IF
@@ -3336,7 +3459,7 @@ PRINTING-NB-SPREAD.
     END-EVALUATE
     IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
        AND WS-PROD-MODE(WS-NBREG) NOT = WS-MODE-COLLAPSED
-        ADD 5 TO WS-CONSCIOUSNESS(WS-NBREG)
+        ADD 2 TO WS-CONSCIOUSNESS(WS-NBREG)
         IF WS-CONSCIOUSNESS(WS-NBREG) > CONSCIOUSNESS-MAX
             MOVE CONSCIOUSNESS-MAX TO WS-CONSCIOUSNESS(WS-NBREG)
         END-IF

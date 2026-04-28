@@ -631,6 +631,12 @@ pub fn run() -> io::Result<()> {
                             r.prod_mode.clone(),
                             Style::default().fg(mode_color(&r.prod_mode)).add_modifier(Modifier::BOLD),
                         ),
+                        // Phase 21: возраст эпохи — сколько ходов регион уже в этом модусе.
+                        // Помогает увидеть «эпоха зреет» вместо мгновенных переходов.
+                        Span::styled(
+                            format!("  ({}y)", r.mode_years),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ]),
                     Line::from(format!("Good:    {}", r.primary_good)),
                     Line::from(format!("Surplus: {:.2}%", r.surplus_rate)),

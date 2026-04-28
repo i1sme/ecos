@@ -1,4 +1,171 @@
 
+## [Phase 22+23 — Естественный темп через сознание; revolution двигает эпоху] 2026-04-27
+
+### Постановка проблемы
+
+Phase 21 решал «эпохи проскакивают за 5 ходов» через жёсткое EPOCH-MIN-* + понижение базовых ставок. Но возникли два новых симптома:
+- **Революции происходят, но «ничего не меняется»** — в SLAVE/MERCANTILE/PROTO-IND/INDUSTRIAL revolution просто менял правителя и пересчитывал классы, mode оставался прежним. Только FEUDAL→MERC и IMPERIAL→SOC реагировали.
+- **Когда меняется — у всех почти одновременно** — `CONSCIOUSNESS-CONTAGION = +3` от соседа с tension≥90 + рост сознания +2-6/ход в MERCANTILE+ + отсутствие decay → положительная обратная связь синхронизировала все 10 регионов на ~30 ходов.
+
+EPOCH-MIN тоже ощущался как принуждающий механизм («эпоха обязана выдержать 150 ходов»), а не естественный.
+
+### Корневая диагностика по Марксу/Ленину
+
+Сознание у нас тикало само собой как часы — без классовой борьбы. Но классовое сознание формируется десятилетиями через **опыт борьбы**, а без active носителя (рабочего класса) спит. Также революция в марксистской теории — это **способ перехода в новую формацию**, а не следствие достижения формацией каких-то порогов.
+
+### Решение
+
+**A. Откат EPOCH-MIN из Phase 21.** Все 6 веток `ACCUMULATE-ALL` больше не проверяют `WS-MODE-YEARS >= EPOCH-MIN-X`. Константы убраны. Поле `WS-MODE-YEARS` оставлено — оно полезно как информация в UI («эпоха идёт N лет») и как референс для будущих механик.
+
+**B. Phase 22 — медленное и структурное сознание** (`CONSCIOUSNESS-ALL` переписан):
+
+| Изменение | Было | Стало |
+|---|---|---|
+| `CONSCIOUSNESS-MERCANTILE` | +1/turn | +0 (mode сам не растит) |
+| `CONSCIOUSNESS-PROTO-IND` | +2/turn | +1/turn |
+| Новые: INDUSTRIAL/IMPERIAL | — | +1/turn каждый |
+| Бонус KNOW L2 (Printing) | +2/turn | +1 раз в 2 хода |
+| Бонус KNOW L3 (Empiric/Scholast/FolkWis) | +2/+3/+1 | +1/+1/+0 |
+| Бонус KNOW L4 (SciMethod) | +1/turn | +1 раз в 2 хода |
+| `CONSCIOUSNESS-SPREAD` (контагия) | +3/соседа | +1/соседа |
+| Условие контагии | — | своё `cons ≥ 20` |
+| Условие любого роста | `artisans ≥ 30` | `artisans + merchants ≥ 30` |
+| Decay | — | каждые 5 ходов −1 без подкрепления |
+| `CONSCIOUSNESS-AFTER-REV` | −5 | −25 (после своей революции) |
+| `CONSCIOUSNESS-AFTER-CLASS` | −2 | −5 (после class-war) |
+| Innovation Printing-Press | +20 (+5 соседям) | +8 (+2 соседям) |
+
+Структурный множитель: **без рабочего класса (artisans+merchants ≥ 30%) сознание не растёт вообще**. Крестьянские империи остаются на нуле. `world.cob` теперь рандомизирует стартовое сознание 5..15 (вместо фиксированного 10) — регионы изначально не синхронизированы.
+
+**C. Phase 23 — революция = прорывной путь mode-shift.** В `REVOLUTION` теперь `EVALUATE WS-PROD-MODE`:
+
+| До революции | Условие | После | Историческая аналогия |
+|---|---|---|---|
+| SLAVE | artisans+merchants ≥ 20 | FEUDAL | падение Рима |
+| FEUDAL | merchants > artisans | MERCANTILE | (было) |
+| MERCANTILE | artisans ≥ 25 | PROTO-INDUSTRL | 1789, 1848 |
+| PROTO-IND | artisans ≥ 30 | INDUSTRIAL | рабочее движение XIX в. |
+| IMPERIAL | — | SOCIALIST | (было) |
+
+`INDUSTRIAL → IMPERIAL` намеренно не делается через революцию (империализм по Ленину — органический исход концентрации финансового капитала, а не классовый прорыв).
+
+### Стресс-тест 2500 ходов
+
+```
+Mode-shifts: 40 total (vs 444 до Phase 21, vs 28 в Phase 21)
+  16× Feudal → Mercantile
+  11× Mercantile → Proto-Industrial
+   4× Proto-Ind → Industrial
+   3× Slave → Feudal           ← Phase 23 заработала
+   3× Industrial → Imperial
+   3× Imperial → Socialist
+
+Revolutions: 98 (vs 731 до Phase 22)
+Class-wars:  1707 (буфер репрессий в FEUDAL — реалистично)
+Years with 3+ simultaneous revolutions: 0  (vs многие до Phase 22)
+```
+
+**Все 7 эпох достигнуты** через комбинацию органического (ACCUMULATE) и революционного пути.
+
+End-state на год 2500:
+- Goldgate — PROTO-INDUSTRL 20y, cons=84 (близок к следующей революции)
+- Ashvale — MERCANTILE 33y, cons=3 (свежий перенос)
+- Ironmarch / Stonehold / Thornwall — FEUDAL 40-140y, cons=0 (стагнация в феодальных репрессиях)
+- Frostfen / Saltmere — FEUDAL 15-20y, cons=6-7 (молодые)
+
+Регионы **асинхронны** — каждый идёт своим путём, революции распределены по 25 столетиям равномерно (1-10 на век).
+
+### Какие файлы затронуты
+
+- `cobol/simulate.cob` — 6 веток ACCUMULATE-ALL без EPOCH-MIN, удалены константы EPOCH-MIN-*, переписан CONSCIOUSNESS-ALL (структурный gating + decay), CONSCIOUSNESS-CONTAGION с условием своей основы, REVOLUTION содержит полный EVALUATE по PROD-MODE на 5 веток, понижены innovation Printing-Press и PRINTING-NB-SPREAD, изменены CONSCIOUSNESS-* константы
+- `cobol/world.cob` — стартовое сознание рандомизировано 5..15
+
+### Результат компиляции
+
+- COBOL: OK
+- Rust: OK без warnings
+- 2500-turn smoke OK, integrity 10/10 (классы=100, length=203)
+
+### Что НЕ меняли
+
+- WS-MODE-YEARS поле и TICK-MODE-YEARS — оставлены как «информация для пользователя» в detail panel. Жёсткое gating убрано, но счётчик полезен.
+- Базовые ставки `MODE-SHIFT-BASE 60`, `CAP 200` (Phase 21) — оставлены пониженными. Сейчас органический темп задают culture multiplier + capital scale, а революция = альтернативный путь снизу.
+- ACCUMULATE-ALL не трогался кроме удаления EPOCH-MIN.
+
+## [Phase 21 — Темп эпох: WS-MODE-YEARS + минимальная выдержка] 2026-04-27
+
+### Проблема
+
+Пользователь: «переход между фазами развития происходит за несколько ходов».
+
+Анализ показал две причины:
+1. **Слишком высокие базовые ставки.** FEUDAL→MERCANTILE base 300‰ (30%/ход), cap 700‰ (70%/ход!). MERC→PROTO 300‰. Даже с культурным множителем 0.33-0.5 это давало 100-150‰ — переход за 7-10 ходов.
+2. **Нет минимальной длительности эпохи.** Как только `capital ≥ threshold` и `class >= min`, переход мог произойти на следующий же ход. Эпоха не «зрела» — она просто отмечала пройденный порог.
+
+### Решение
+
+**Новое поле `WS-MODE-YEARS PIC 9(4)`** в структуре `WS-REGION` — счётчик ходов в текущей эпохе. world.dat 199→203 байт (поле в 1-indexed COBOL смещении 200..203).
+
+Жизненный цикл:
+- `world.cob`: инициализация = 0 при создании мира.
+- `simulate.cob` → новый параграф `TICK-MODE-YEARS` запускается каждый ход в начале (после LOAD-WORLD): `WS-MODE-YEARS += 1` для всех живых регионов; COLLAPSED не тикает.
+- Сброс на 0: при каждом mode-shift в `ACCUMULATE-ALL`, при революции (FEUDAL→MERCANTILE и IMPERIAL→SOCIALIST в `REVOLUTION`), при коллапсе в `COLLAPSE-ONE`, при возрождении в `ACCUMULATE-ALL` (REBIRTH ветка).
+- Backwards-compat при загрузке старых world.dat (длина < 203): поле = 0.
+
+**Минимальная выдержка эпохи** — каждая ветка `ACCUMULATE-ALL` теперь начинается с проверки:
+```cobol
+IF WS-MODE-YEARS(WS-IDX) >= EPOCH-MIN-X
+   AND <старые условия capital + классы>
+    ...
+```
+Константы: `EPOCH-MIN-PRIMITIVE 30`, `EPOCH-MIN-SLAVE 80`, `EPOCH-MIN-FEUDAL 150`, `EPOCH-MIN-MERCANTILE 100`, `EPOCH-MIN-PROTO-IND 80`, `EPOCH-MIN-INDUSTRIAL 50`. Поздние эпохи короче — отражает Ленинскую идею «империализм как высшая, нестабильная стадия».
+
+**Снижение базовых ставок** в 3-5 раз:
+- `MODE-SHIFT-BASE-PERMIL`: 300 → 60
+- `MODE-SHIFT-CAP-PERMIL`: 700 → 200
+- `SLAVE-BASE-PERMIL`: 30 → 10
+- `FEUDAL-BASE-PERMIL`: 50 → 15
+- `INDUSTRIAL-BASE-PERMIL`: 250 → 50
+- `IMPERIAL-BASE-PERMIL`: 200 → 40
+- Добавлены `MERCANTILE-BASE-PERMIL 60` и `PROTO-IND-BASE-PERMIL 60` (зарезервированы; пока FEUDAL→MERC и MERC→PROTO используют общий MODE-SHIFT-BASE-PERMIL).
+
+**UI**: в detail panel рядом с `Mode:` выводится `(NNNy)` — возраст эпохи. Серым цветом, без выделения. Пользователь видит «эпоха зреет» вживую: счётчик ходит до сотен лет прежде чем регион начинает примеряться к следующему модусу.
+
+### Результат стресс-теста (1500 ходов)
+
+| Метрика | До Phase 21 (2500 turns) | После Phase 21 (1500 turns) |
+|---|---|---|
+| Mode-shift events | 444 | **28** |
+| Avg per region | 44.4 / 10 = 4.4 | 2.8 / 10 = **0.28** |
+| Avg epoch duration | ~50 лет | **179 лет** (медиана 103, max 655) |
+| Первый mode-shift | год 1-13 (SLAVE→FEUDAL) | **год 213** (FEUDAL→MERCANTILE) |
+
+**End-state на год 1500:**
+- Ironmarch — SOCIALIST 984y (лидер, прошёл всю лестницу)
+- Goldgate — PROTO-INDUSTRL 694y (стабильная мануфактура)
+- Stonehold/Cinderkeep/Thornwall — FEUDAL по 100-135y
+- Ashvale/Saltmere — FEUDAL 65-99y (молодые феодальные)
+- Frostfen/Duskveil/Embervast — FEUDAL 11-34y (только что переродились)
+
+Регионы ощутимо различаются по темпу — каждый идёт своим путём, как пользователь и хотел.
+
+### Какие файлы затронуты
+
+- `cobol/simulate.cob` — `WS-MODE-YEARS` в структуре, `WS-WORLD-REC` 200→204, `WS-OUT-LINE` 200→204, `WORLD-REC-LEN` 199→203, `READ-WORLD` парсинг, `WRITE-WORLD` запись, новый `TICK-MODE-YEARS` параграф, обновлены 6 веток `ACCUMULATE-ALL` + `REVOLUTION` + `COLLAPSE-ONE` + `REBIRTH` (сбросы), новые константы EPOCH-MIN-*, понижены базовые ставки
+- `cobol/world.cob` — `WS-MODE-YEARS` в структуре, `WS-OUT-LINE` 200→204, инициализация = 0, запись в STRING
+- `src/world.rs` — поле `mode_years: u16`, парсинг с offset 199 / 4 байта, обновлена таблица смещений в комментарии
+- `src/ui.rs` — рендер `(NNNy)` рядом с Mode в detail panel
+
+### Результат компиляции
+
+- COBOL: OK
+- Rust: OK без warnings
+
+### Замечания на будущее
+
+- В стресс-тесте за 1500 ходов 0 переходов SLAVE→FEUDAL: стартовые SLAVE-регионы либо коллапсировали (REBIRTH ставит FEUDAL), либо революции FEUDAL→MERC проскакивали SLAVE-этап через class-tension. EPOCH-MIN-SLAVE = 80 ходов — может быть слишком долгим относительно стартовых условий (capital=500). Если хочется чтобы SLAVE→FEUDAL действительно фиксировался — снизить EPOCH-MIN-SLAVE до 40 или повысить стартовый capital. Пока оставляем — динамика «коллапсов античности» исторически правдоподобна.
+- Старые сейвы (199-байт world.dat из Phase 19/20) загрузятся, поле прочитается как 0 — после первого хода `TICK-MODE-YEARS` начнёт считать. Это означает: первая эпоха после загрузки старого сейва закончится через `EPOCH-MIN-X` ходов от момента загрузки, не от исторической точки. Допустимый компромисс.
+
 ## [Phase 20 — Save/load механика, фикс tech-DONE отображения, .gitignore] 2026-04-27
 
 ### Что сделано

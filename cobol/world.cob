@@ -52,6 +52,8 @@ WORKING-STORAGE SECTION.
    05 WS-CULT-MIL          PIC 9(3).
    05 WS-CULT-MERC         PIC 9(3).
    05 WS-CULT-REL          PIC 9(3).
+*> Phase 21 — счётчик лет в эпохе (стартуем с 0)
+   05 WS-MODE-YEARS        PIC 9(4).
 
 *> Пул имён правителей (20 фэнтезийных). Используется при генерации/наследовании.
 01 WS-NAME-POOL.
@@ -93,7 +95,7 @@ WORKING-STORAGE SECTION.
 01 WS-IDX               PIC 99.
 01 WS-RAND-RAW          PIC 9(9)V9(9).
 01 WS-RAND-INT          PIC 99.
-01 WS-OUT-LINE          PIC X(200).
+01 WS-OUT-LINE          PIC X(204).
 
 01 WS-BASE-ART          PIC S9(3).
 01 WS-BASE-MERCH        PIC S9(3).
@@ -311,13 +313,18 @@ INIT-REGION.
     MOVE WS-TRAIT-ENTRY(WS-TRAIT-IDX) TO WS-RULER-TRAIT(WS-IDX)
     COMPUTE WS-RAND-INT = FUNCTION INTEGER(FUNCTION RANDOM * 15) + 1
     MOVE WS-RAND-INT TO WS-RULER-REIGN(WS-IDX)
-    MOVE 010                 TO WS-CONSCIOUSNESS(WS-IDX)
+*>  Phase 22 — стартовое сознание варьируется 5..15. Чтобы регионы
+*>  не были синхронизированы с самого начала, у каждого свой «уровень».
+    COMPUTE WS-RAND-INT = FUNCTION INTEGER(FUNCTION RANDOM * 11) + 5
+    MOVE WS-RAND-INT         TO WS-CONSCIOUSNESS(WS-IDX)
 *>  Стартовая культура: первобытно-родовое — религия и мелкие стычки.
 *>  Энгельс «Происхождение семьи»: ритуал и кровный строй есть на старте.
 *>  Меркантильная культура накапливается через торговлю, не дана сразу.
     MOVE 002                 TO WS-CULT-MIL(WS-IDX)
     MOVE 000                 TO WS-CULT-MERC(WS-IDX)
-    MOVE 008                 TO WS-CULT-REL(WS-IDX).
+    MOVE 008                 TO WS-CULT-REL(WS-IDX)
+*>  Phase 21 — стартуем «новой» эпохой
+    MOVE 0000                TO WS-MODE-YEARS(WS-IDX).
 
 ASSIGN-NEIGHBORS.
 *> Фиксированная топология: кольцо + диагональные связи.
@@ -407,6 +414,7 @@ WRITE-REGIONS.
         WS-CULT-MIL(WS-IDX)         DELIMITED SIZE
         WS-CULT-MERC(WS-IDX)        DELIMITED SIZE
         WS-CULT-REL(WS-IDX)         DELIMITED SIZE
+        WS-MODE-YEARS(WS-IDX)       DELIMITED SIZE
         INTO WS-OUT-LINE
     END-STRING
 
