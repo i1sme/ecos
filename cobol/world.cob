@@ -17,7 +17,7 @@ FILE SECTION.
 FD REGIONS-FILE.
 01 REGION-RECORD  PIC X(80).
 FD POLITIES-FILE.
-01 POLITY-RECORD  PIC X(180).
+01 POLITY-RECORD  PIC X(200).
 
 WORKING-STORAGE SECTION.
 
@@ -33,8 +33,12 @@ WORKING-STORAGE SECTION.
    05 WS-NEIGHBOR-2        PIC 99.
    05 WS-NEIGHBOR-3        PIC 99.
 
-01 WS-POLITIES OCCURS 10 TIMES.
+*> Phase 24 / Этап 2B: 30 слотов политий (10 стартовых живых +
+*> 20 резервных EXTINCT для будущего spawn'а наследников).
+*> WS-REGION-ID — в каком регионе живёт полития (0 = не размещена).
+01 WS-POLITIES OCCURS 30 TIMES.
    05 WS-POLITY-NAME       PIC X(20).
+   05 WS-REGION-ID         PIC 99.
    05 WS-POPULATION        PIC 9(8).
    05 WS-PEASANTS-PCT      PIC 9(3).
    05 WS-ARTISANS-PCT      PIC 9(3).
@@ -119,14 +123,20 @@ WORKING-STORAGE SECTION.
 
 PROCEDURE DIVISION.
 MAIN-PARA.
+*>  Phase 24 / Этап 2B: 10 живых стартовых политий + 20 EXTINCT-резервов.
+*>  Резервы пишутся как пустые слоты в polities.dat — simulate их видит
+*>  как dormant (фильтр POLITY-DORMANT) и при коллапсе крупной политии
+*>  может оживить один из них как наследника.
     PERFORM INIT-REGION VARYING WS-IDX FROM 1 BY 1
         UNTIL WS-IDX > 10
+    PERFORM INIT-EXTINCT-SLOT VARYING WS-IDX FROM 11 BY 1
+        UNTIL WS-IDX > 30
 
     PERFORM ASSIGN-NEIGHBORS
 
-*>  Phase 24 — Этап 1: пишем два файла. regions.dat (геофон) — статика,
-*>  никогда больше не переписывается до следующего mundo gen. polities.dat
-*>  (политический слой) — переписывается simulate'ом каждый ход.
+*>  regions.dat (геофон) — 10 строк, статика.
+*>  polities.dat — 30 строк (10 живых + 20 EXTINCT), переписывается
+*>  simulate'ом каждый ход.
     OPEN OUTPUT REGIONS-FILE
     PERFORM WRITE-REGION-ROW VARYING WS-IDX FROM 1 BY 1
         UNTIL WS-IDX > 10
@@ -134,7 +144,7 @@ MAIN-PARA.
 
     OPEN OUTPUT POLITIES-FILE
     PERFORM WRITE-POLITY-ROW VARYING WS-IDX FROM 1 BY 1
-        UNTIL WS-IDX > 10
+        UNTIL WS-IDX > 30
     CLOSE POLITIES-FILE
     STOP RUN.
 
@@ -346,7 +356,41 @@ INIT-REGION.
 *>  Phase 24 — Этап 1: имя политии = имя региона на старте.
 *>  В будущем (Этап 2+) при спавне новой политии в существующем регионе
 *>  WS-POLITY-NAME будет отличаться от WS-NAME.
-    MOVE WS-NAME(WS-IDX)     TO WS-POLITY-NAME(WS-IDX).
+    MOVE WS-NAME(WS-IDX)     TO WS-POLITY-NAME(WS-IDX)
+*>  Phase 24 / Этап 2B: на старте polity[i] живёт в region[i] (1:1).
+    MOVE WS-IDX              TO WS-REGION-ID(WS-IDX).
+
+INIT-EXTINCT-SLOT.
+*>  Phase 24 / Этап 2B — резервный слот политии (11..30).
+*>  Изначально EXTINCT, не размещён в регионе. simulate.cob может
+*>  оживить такой слот при распаде большой политии (SPAWN-HEIR).
+    MOVE SPACES              TO WS-POLITY-NAME(WS-IDX)
+    MOVE 0                   TO WS-REGION-ID(WS-IDX)
+    MOVE 0                   TO WS-POPULATION(WS-IDX)
+    MOVE 0                   TO WS-PEASANTS-PCT(WS-IDX)
+    MOVE 0                   TO WS-ARTISANS-PCT(WS-IDX)
+    MOVE 0                   TO WS-MERCHANTS-PCT(WS-IDX)
+    MOVE 0                   TO WS-NOBILITY-PCT(WS-IDX)
+    MOVE 0                   TO WS-CLERGY-PCT(WS-IDX)
+    MOVE "EXTINCT        "   TO WS-PROD-MODE(WS-IDX)
+    MOVE 0                   TO WS-LABOUR-HOURS(WS-IDX)
+    MOVE 0                   TO WS-SURPLUS-RATE(WS-IDX)
+    MOVE 0                   TO WS-CAPITAL-STOCK(WS-IDX)
+    MOVE 0                   TO WS-CLASS-TENSION(WS-IDX)
+    MOVE 0                   TO WS-MILITARY-STRENGTH(WS-IDX)
+    MOVE 0                   TO WS-AT-WAR-WITH(WS-IDX)
+    MOVE 0                   TO WS-COLLAPSE-TIMER(WS-IDX)
+    MOVE 0                   TO WS-WAR-YEAR(WS-IDX)
+    MOVE "PEACE     "        TO WS-WAR-TYPE(WS-IDX)
+    MOVE SPACES              TO WS-RULER-NAME(WS-IDX)
+    MOVE 0                   TO WS-RULER-AGE(WS-IDX)
+    MOVE SPACES              TO WS-RULER-TRAIT(WS-IDX)
+    MOVE 0                   TO WS-RULER-REIGN(WS-IDX)
+    MOVE 0                   TO WS-CONSCIOUSNESS(WS-IDX)
+    MOVE 0                   TO WS-CULT-MIL(WS-IDX)
+    MOVE 0                   TO WS-CULT-MERC(WS-IDX)
+    MOVE 0                   TO WS-CULT-REL(WS-IDX)
+    MOVE 0                   TO WS-MODE-YEARS(WS-IDX).
 
 ASSIGN-NEIGHBORS.
 *> Фиксированная топология: кольцо + диагональные связи.
@@ -422,16 +466,18 @@ WRITE-REGION-ROW.
 
 WRITE-POLITY-ROW.
 *>  Политический слой. Layout polities.dat (1-indexed COBOL):
-*>    POLITY-NAME(20) | POPULATION(8) | PEASANTS(3) | ARTISANS(3) |
+*>    POLITY-NAME(20) | REGION-ID(2) | POPULATION(8) | PEASANTS(3) | ARTISANS(3) |
 *>    MERCHANTS(3) | NOBILITY(3) | CLERGY(3) | PROD-MODE(15) |
 *>    LABOUR-HOURS(10) | SURPLUS-RATE(5) | CAPITAL-STOCK(12) |
 *>    CLASS-TENSION(3) | MILITARY-STR(5) | AT-WAR-WITH(2) |
 *>    COLLAPSE-TIMER(3) | WAR-YEAR(3) | WAR-TYPE(10) | RULER-NAME(20) |
 *>    RULER-AGE(2) | RULER-TRAIT(10) | RULER-REIGN(3) | CONSCIOUSNESS(3) |
-*>    CULT-MIL(3) | CULT-MERC(3) | CULT-REL(3) | MODE-YEARS(4)  = 158 байт
+*>    CULT-MIL(3) | CULT-MERC(3) | CULT-REL(3) | MODE-YEARS(4)  = 160 байт
+*>    Phase 24/Этап 2B: добавлен REGION-ID после POLITY-NAME (+2 байта).
     MOVE SPACES TO WS-OUT-LINE
     STRING
         WS-POLITY-NAME(WS-IDX)      DELIMITED SIZE
+        WS-REGION-ID(WS-IDX)        DELIMITED SIZE
         WS-POPULATION(WS-IDX)       DELIMITED SIZE
         WS-PEASANTS-PCT(WS-IDX)     DELIMITED SIZE
         WS-ARTISANS-PCT(WS-IDX)     DELIMITED SIZE

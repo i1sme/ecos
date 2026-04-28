@@ -437,11 +437,16 @@ pub fn run() -> io::Result<()> {
         let relations = parse_relations(relations_path);
         let tech = parse_tech(tech_path);
         let region_names: Vec<String> = regions.iter().map(|r| r.name.clone()).collect();
-        let n = regions.len().min(polities.len());
+        let _ = polities; // прямой доступ запрещаем — UI использует occupant_of
+        let n = regions.len();
 
-        // Записываем снимок истории если год сменился (per-session, в памяти)
-        history.record_if_new_year(year, polities, |p: &Polity| {
-            (p.class_tension as u64, p.population as u64, p.capital_stock as u64)
+        // Phase 24 / Этап 2B: history индексируется per-region, метрики
+        // берутся у occupant'а (текущей политии в регионе). При смене
+        // политии (FRAGMENT/EXTINCT/spawn) trend начинается заново.
+        history.record_if_new_year(year, regions, |i: usize, _r: &Region| {
+            world.occupant_of(i).map(|(_, p)| {
+                (p.class_tension as u64, p.population as u64, p.capital_stock as u64)
+            }).unwrap_or((0, 0, 0))
         });
 
         terminal.draw(|f| {
@@ -505,45 +510,54 @@ pub fn run() -> io::Result<()> {
             )
             .height(1);
 
+            // Phase 24 / Этап 2B: для каждого региона ищем активную политию
+            // через occupant_of (region_id-based lookup), не через индекс.
+            // Это нужно потому что polity[i] больше не обязательно занимает
+            // region[i] — наследник в slot 11+ может жить в любом регионе.
+            // Если регион пуст (нет occupant'а) — рисуем «✗ vacant».
             let rows: Vec<Row> = regions
                 .iter()
-                .zip(polities.iter())
-                .map(|(r, p)| {
-                    if is_extinct(&p.prod_mode) {
-                        // Phase 24 / Этап 2A: полития окончательно вымерла.
-                        // Регион остаётся на карте (терраин/имя) — но без хозяина.
-                        Row::new([
-                            Cell::from(r.name.clone()),
-                            Cell::from(r.terrain.clone()),
-                            Cell::from("       —"),
-                            Cell::from("  —"),
-                            Cell::from("✗ EXTINCT"),
-                            Cell::from("EXTINCT"),
-                        ]).style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM))
-                    } else if is_collapsed(&p.prod_mode) {
-                        Row::new([
-                            Cell::from(r.name.clone()),
-                            Cell::from(r.terrain.clone()),
-                            Cell::from(format!("{:>8}", p.population)),
-                            Cell::from("  —").style(Style::default().fg(Color::DarkGray)),
-                            Cell::from("☠ COLLAPSED").style(Style::default().fg(Color::DarkGray)),
-                            Cell::from("COLLAPSED").style(Style::default().fg(Color::DarkGray)),
-                        ]).style(Style::default().fg(Color::DarkGray))
-                    } else {
-                        let col = tension_color(p.class_tension);
-                        let war = if p.at_war_with != 0 { "⚔ " } else { "  " };
-                        let mcol = mode_color(&p.prod_mode);
-                        Row::new([
-                            Cell::from(r.name.clone()),
-                            Cell::from(r.terrain.clone()),
-                            Cell::from(format!("{:>8}", p.population)),
-                            Cell::from(format!("{:>3}", p.class_tension))
-                                .style(Style::default().fg(col)),
-                            Cell::from(format!("{}{}", war, tension_label(p.class_tension)))
-                                .style(Style::default().fg(col)),
-                            Cell::from(p.prod_mode.clone())
-                                .style(Style::default().fg(mcol)),
-                        ])
+                .enumerate()
+                .map(|(i, r)| {
+                    match world.occupant_of(i) {
+                        None => {
+                            // Регион без хозяина — после EXTINCT-извинения
+                            // или fragment-без-наследника.
+                            Row::new([
+                                Cell::from(r.name.clone()),
+                                Cell::from(r.terrain.clone()),
+                                Cell::from("       —"),
+                                Cell::from("  —"),
+                                Cell::from("✗ vacant"),
+                                Cell::from("—"),
+                            ]).style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM))
+                        }
+                        Some((_, p)) if is_collapsed(&p.prod_mode) => {
+                            Row::new([
+                                Cell::from(r.name.clone()),
+                                Cell::from(r.terrain.clone()),
+                                Cell::from(format!("{:>8}", p.population)),
+                                Cell::from("  —").style(Style::default().fg(Color::DarkGray)),
+                                Cell::from("☠ COLLAPSED").style(Style::default().fg(Color::DarkGray)),
+                                Cell::from("COLLAPSED").style(Style::default().fg(Color::DarkGray)),
+                            ]).style(Style::default().fg(Color::DarkGray))
+                        }
+                        Some((_, p)) => {
+                            let col = tension_color(p.class_tension);
+                            let war = if p.at_war_with != 0 { "⚔ " } else { "  " };
+                            let mcol = mode_color(&p.prod_mode);
+                            Row::new([
+                                Cell::from(r.name.clone()),
+                                Cell::from(r.terrain.clone()),
+                                Cell::from(format!("{:>8}", p.population)),
+                                Cell::from(format!("{:>3}", p.class_tension))
+                                    .style(Style::default().fg(col)),
+                                Cell::from(format!("{}{}", war, tension_label(p.class_tension)))
+                                    .style(Style::default().fg(col)),
+                                Cell::from(p.prod_mode.clone())
+                                    .style(Style::default().fg(mcol)),
+                            ])
+                        }
                     }
                 })
                 .collect();
@@ -572,9 +586,44 @@ pub fn run() -> io::Result<()> {
             // готов к будущему расхождению на Этапе 2+.
             // Phase 24 / Этап 2A: для EXTINCT региона показываем «без хозяина»
             // в укороченном виде — у него нет правителя, классов, культуры.
-            let detail_lines = if let (Some(r), Some(p)) =
-                (regions.get(selected), polities.get(selected))
-            {
+            // Phase 24 / Этап 2B: показываем occupant_of(selected_region).
+            // None → регион пустой (vacant); рендерим как extinct.
+            let detail_lines = if let Some(r) = regions.get(selected) {
+                let occupant = world.occupant_of(selected);
+                let p_opt = occupant.map(|(_, p)| p);
+                if p_opt.is_none() || p_opt.map(|p| is_extinct(&p.prod_mode)).unwrap_or(true) {
+                    // Регион без хозяина (vacant) — fallback rendering.
+                    let _ = p_opt;
+                    let r_for_extinct = r;
+                    let lines = vec![
+                        Line::from(vec![
+                            Span::styled("Region: ", Style::default().fg(Color::DarkGray)),
+                            Span::styled(
+                                r_for_extinct.name.clone(),
+                                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                format!("  {} {}", r_for_extinct.terrain.trim(), r_for_extinct.climate.trim()),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ]),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "✗ vacant",
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from(Span::styled(
+                            "Region has no polity.",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            format!("Good (untended): {}", r_for_extinct.primary_good.trim()),
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                    ];
+                    lines
+                } else if let Some(p) = p_opt {
                 if is_extinct(&p.prod_mode) {
                     vec![
                         Line::from(vec![
@@ -771,6 +820,7 @@ pub fn run() -> io::Result<()> {
 
                 lines
                 } // конец живой ветки (else после is_extinct)
+                } else { vec![] } // unreachable: p_opt уже проверена выше
             } else {
                 vec![]
             };

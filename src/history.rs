@@ -44,18 +44,20 @@ impl WorldHistory {
     }
 
     /// Записывает снимок если год сменился.
-    pub fn record_if_new_year<R, F>(&mut self, year: u32, regions: &[R], f: F)
+    /// Phase 24 / Этап 2B: callback получает (idx, &R) — это позволяет
+    /// caller'у искать occupant_of(idx) для региона.
+    pub fn record_if_new_year<R, F>(&mut self, year: u32, items: &[R], f: F)
     where
-        F: Fn(&R) -> (u64, u64, u64),
+        F: Fn(usize, &R) -> (u64, u64, u64),
     {
         if year == self.last_year {
             return;
         }
-        for (i, r) in regions.iter().enumerate() {
+        for (i, r) in items.iter().enumerate() {
             if i >= self.regions.len() {
                 break;
             }
-            let (t, p, c) = f(r);
+            let (t, p, c) = f(i, r);
             self.regions[i].push(t, p, c);
         }
         self.last_year = year;

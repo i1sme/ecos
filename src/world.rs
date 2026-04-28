@@ -25,30 +25,34 @@
 // |----------------|-------|-------|
 // | name           |   0   |  20   |
 // | population     |  20   |   8   |
-// | peasants_pct   |  28   |   3   |
-// | artisans_pct   |  31   |   3   |
-// | merchants_pct  |  34   |   3   |
-// | nobility_pct   |  37   |   3   |
-// | clergy_pct     |  40   |   3   |
-// | prod_mode      |  43   |  15   |
-// | labour_hours   |  58   |  10   |
-// | surplus_rate   |  68   |   5   | (×100, делим)
-// | capital_stock  |  73   |  12   | (×100, делим)
-// | class_tension  |  85   |   3   |
-// | military_strength | 88 |   5   |
-// | at_war_with    |  93   |   2   |
-// | collapse_timer |  95   |   3   |
-// | war_year       |  98   |   3   |
-// | war_type       | 101   |  10   |
-// | ruler_name     | 111   |  20   |
-// | ruler_age      | 131   |   2   |
-// | ruler_trait    | 133   |  10   |
-// | ruler_reign    | 143   |   3   |
-// | consciousness  | 146   |   3   |
-// | culture_mil    | 149   |   3   |
-// | culture_merc   | 152   |   3   |
-// | culture_rel    | 155   |   3   |
-// | mode_years     | 158   |   4   |
+// Phase 24 / Этап 2B: добавлен region_id (сместил все последующие поля на 2).
+// | name           |   0   |  20   |
+// | region_id      |  20   |   2   | ← Phase 24/2B (1..10 для живых, 0 для EXTINCT)
+// | population     |  22   |   8   |
+// | peasants_pct   |  30   |   3   |
+// | artisans_pct   |  33   |   3   |
+// | merchants_pct  |  36   |   3   |
+// | nobility_pct   |  39   |   3   |
+// | clergy_pct     |  42   |   3   |
+// | prod_mode      |  45   |  15   |
+// | labour_hours   |  60   |  10   |
+// | surplus_rate   |  70   |   5   | (×100, делим)
+// | capital_stock  |  75   |  12   | (×100, делим)
+// | class_tension  |  87   |   3   |
+// | military_strength | 90 |   5   |
+// | at_war_with    |  95   |   2   |
+// | collapse_timer |  97   |   3   |
+// | war_year       | 100   |   3   |
+// | war_type       | 103   |  10   |
+// | ruler_name     | 113   |  20   |
+// | ruler_age      | 133   |   2   |
+// | ruler_trait    | 135   |  10   |
+// | ruler_reign    | 145   |   3   |
+// | consciousness  | 148   |   3   |
+// | culture_mil    | 151   |   3   |
+// | culture_merc   | 154   |   3   |
+// | culture_rel    | 157   |   3   |
+// | mode_years     | 160   |   4   |
 
 #[derive(Debug, Clone)]
 pub struct Region {
@@ -62,6 +66,9 @@ pub struct Region {
 #[derive(Debug, Clone)]
 pub struct Polity {
     pub name: String,
+    /// Phase 24 / Этап 2B: на каком регионе живёт полития (1..10);
+    /// 0 для EXTINCT-резервов в slots 11..30.
+    pub region_id: u8,
     pub population: u32,
     pub peasants_pct: u8,
     pub artisans_pct: u8,
@@ -90,21 +97,28 @@ pub struct Polity {
     pub mode_years: u16,
 }
 
-/// Связка геофона и политического слоя. На Этапе 1 длина обоих векторов
-/// равна 10 и индекс совпадает: polity_of(i) живёт в regions[i].
+/// Связка геофона и политического слоя.
+/// Phase 24 / Этап 2B: regions всегда 10, polities — до 30 (часть из них
+/// EXTINCT-резервы для будущего spawn'а наследников).
 pub struct World {
     pub regions: Vec<Region>,
     pub polities: Vec<Polity>,
 }
 
 impl World {
-    /// Полития в указанном регионе. На Этапе 1 — простая 1:1 связь.
-    /// На Этапе 2+ это уже будет lookup через `region_id` поле политии.
-    /// Сейчас не используется — UI работает с двумя векторами параллельно;
-    /// метод оставлен для будущей миграции на индексирование через polity_id.
+    /// Phase 24 / Этап 2B: ищем активную политию которая занимает
+    /// данный регион. Линейный поиск по polities — на 30 элементов
+    /// быстрый, не нужен mapping.
+    /// Возвращает (polity_index, &Polity) или None если регион пустой.
+    /// Используется UI на B.2+ когда polity_index перестанет совпадать
+    /// с region_index. На B.1 ещё не вызывается, но определён уже сейчас.
     #[allow(dead_code)]
-    pub fn polity_of(&self, region_idx: usize) -> Option<&Polity> {
-        self.polities.get(region_idx)
+    pub fn occupant_of(&self, region_idx: usize) -> Option<(usize, &Polity)> {
+        let region_id = (region_idx + 1) as u8;  // 0-indexed → 1-indexed
+        self.polities
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.region_id == region_id && p.prod_mode.trim() != "EXTINCT")
     }
 }
 
@@ -156,32 +170,33 @@ pub fn parse_polities(path: &str) -> Vec<Polity> {
         .filter(|l| !l.is_empty())
         .map(|line| Polity {
             name:              slice_or_blank(line, 0,   20).to_string(),
-            population:        parse_u64(slice_or_blank(line, 20, 8)) as u32,
-            peasants_pct:      parse_u64(slice_or_blank(line, 28, 3)) as u8,
-            artisans_pct:      parse_u64(slice_or_blank(line, 31, 3)) as u8,
-            merchants_pct:     parse_u64(slice_or_blank(line, 34, 3)) as u8,
-            nobility_pct:      parse_u64(slice_or_blank(line, 37, 3)) as u8,
-            clergy_pct:        parse_u64(slice_or_blank(line, 40, 3)) as u8,
-            prod_mode:         slice_or_blank(line, 43, 15).to_string(),
-            labour_hours:      parse_u64(slice_or_blank(line, 58, 10)),
-            surplus_rate:      parse_dec(slice_or_blank(line, 68, 5)),
-            capital_stock:     parse_dec(slice_or_blank(line, 73, 12)),
-            class_tension:     parse_u64(slice_or_blank(line, 85, 3)) as u8,
-            military_strength: parse_u64(slice_or_blank(line, 88, 5)) as u32,
-            at_war_with:       parse_u64(slice_or_blank(line, 93, 2)) as u8,
-            // collapse_timer @ 95..98 в polities.dat — используется только
+            region_id:         parse_u64(slice_or_blank(line, 20, 2)) as u8,
+            population:        parse_u64(slice_or_blank(line, 22, 8)) as u32,
+            peasants_pct:      parse_u64(slice_or_blank(line, 30, 3)) as u8,
+            artisans_pct:      parse_u64(slice_or_blank(line, 33, 3)) as u8,
+            merchants_pct:     parse_u64(slice_or_blank(line, 36, 3)) as u8,
+            nobility_pct:      parse_u64(slice_or_blank(line, 39, 3)) as u8,
+            clergy_pct:        parse_u64(slice_or_blank(line, 42, 3)) as u8,
+            prod_mode:         slice_or_blank(line, 45, 15).to_string(),
+            labour_hours:      parse_u64(slice_or_blank(line, 60, 10)),
+            surplus_rate:      parse_dec(slice_or_blank(line, 70, 5)),
+            capital_stock:     parse_dec(slice_or_blank(line, 75, 12)),
+            class_tension:     parse_u64(slice_or_blank(line, 87, 3)) as u8,
+            military_strength: parse_u64(slice_or_blank(line, 90, 5)) as u32,
+            at_war_with:       parse_u64(slice_or_blank(line, 95, 2)) as u8,
+            // collapse_timer @ 97..100 в polities.dat — используется только
             // COBOL'ом для отсчёта REBIRTH-DURATION; UI не отображает.
-            war_year:          parse_u64(slice_or_blank(line, 98, 3)) as u16,
-            war_type:          slice_or_blank(line, 101, 10).to_string(),
-            ruler_name:        slice_or_blank(line, 111, 20).to_string(),
-            ruler_age:         parse_u64(slice_or_blank(line, 131, 2)) as u8,
-            ruler_trait:       slice_or_blank(line, 133, 10).to_string(),
-            ruler_reign:       parse_u64(slice_or_blank(line, 143, 3)) as u16,
-            consciousness:     parse_u64(slice_or_blank(line, 146, 3)) as u8,
-            culture_mil:       parse_u64(slice_or_blank(line, 149, 3)) as u8,
-            culture_merc:      parse_u64(slice_or_blank(line, 152, 3)) as u8,
-            culture_rel:       parse_u64(slice_or_blank(line, 155, 3)) as u8,
-            mode_years:        parse_u64(slice_or_blank(line, 158, 4)) as u16,
+            war_year:          parse_u64(slice_or_blank(line, 100, 3)) as u16,
+            war_type:          slice_or_blank(line, 103, 10).to_string(),
+            ruler_name:        slice_or_blank(line, 113, 20).to_string(),
+            ruler_age:         parse_u64(slice_or_blank(line, 133, 2)) as u8,
+            ruler_trait:       slice_or_blank(line, 135, 10).to_string(),
+            ruler_reign:       parse_u64(slice_or_blank(line, 145, 3)) as u16,
+            consciousness:     parse_u64(slice_or_blank(line, 148, 3)) as u8,
+            culture_mil:       parse_u64(slice_or_blank(line, 151, 3)) as u8,
+            culture_merc:      parse_u64(slice_or_blank(line, 154, 3)) as u8,
+            culture_rel:       parse_u64(slice_or_blank(line, 157, 3)) as u8,
+            mode_years:        parse_u64(slice_or_blank(line, 160, 4)) as u16,
         })
         .collect()
 }

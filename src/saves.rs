@@ -74,7 +74,8 @@ pub fn list_slots() -> Vec<SlotInfo> {
 }
 
 /// Phase 24 — Этап 1: разбивает legacy `world.dat` на `regions.dat` +
-/// `polities.dat` по offset'ам Phase 21 (203/204-байтные строки).
+/// `polities.dat`. Phase 24 / Этап 2B: добавляет region_id и расширяет
+/// polities.dat до 30 строк (10 живых из legacy + 20 EXTINCT-резервов).
 /// Идемпотентен: если regions.dat уже существует, вызов no-op.
 /// Оригинал world.dat НЕ удаляется — переименовывается в world.dat.legacy
 /// для возможности отката.
@@ -88,6 +89,7 @@ fn migrate_legacy_slot(slot_dir: &Path) -> io::Result<()> {
     let content = fs::read_to_string(&world)?;
     let mut regions_out = String::new();
     let mut polities_out = String::new();
+    let mut active_count: usize = 0;
     for line in content.lines() {
         if line.is_empty() {
             continue;
@@ -108,6 +110,7 @@ fn migrate_legacy_slot(slot_dir: &Path) -> io::Result<()> {
             let end = (start + len).min(line.len());
             &line[start..end]
         };
+        active_count += 1;
         // regions.dat: name | terrain | climate | primary_good | neighbors
         regions_out.push_str(&format!(
             "{:20}{:10}{:10}{:15}{:6}\n",
@@ -117,18 +120,24 @@ fn migrate_legacy_slot(slot_dir: &Path) -> io::Result<()> {
             take(78, 15),
             take(146, 6),
         ));
-        // polities.dat: name | population | classes | prod_mode | labour_hours |
-        //   surplus_rate | capital_stock | class_tension | military | at_war_with |
-        //   collapse_timer | war_year | war_type | ruler_name | ruler_age |
-        //   ruler_trait | ruler_reign | consciousness | culture | mode_years
+        // polities.dat (Phase 2B layout):
+        //   name(20) | region_id(2) | population(8) | classes(15) |
+        //   prod_mode(15) | labour_hours(10) | surplus_rate(5) |
+        //   capital_stock(12) | class_tension(3) | military(5) |
+        //   at_war_with(2) | collapse_timer(3) | war_year(3) | war_type(10) |
+        //   ruler_name(20) | ruler_age(2) | ruler_trait(10) | ruler_reign(3) |
+        //   consciousness(3) | culture(9) | mode_years(4)
         let mode_years_field = if line.len() >= 203 {
             take(199, 4).to_string()
         } else {
             "0000".to_string()
         };
+        // На Этапе 2B: legacy полития жила 1:1 с регионом → region_id = active_count
+        let region_id_field = format!("{:02}", active_count);
         polities_out.push_str(&format!(
-            "{:20}{:8}{:15}{:15}{:10}{:5}{:12}{:3}{:5}{:2}{:3}{:3}{:10}{:20}{:2}{:10}{:3}{:3}{:9}{:4}\n",
+            "{:20}{}{:8}{:15}{:15}{:10}{:5}{:12}{:3}{:5}{:2}{:3}{:3}{:10}{:20}{:2}{:10}{:3}{:3}{:9}{:4}\n",
             take(0, 20),
+            region_id_field,
             take(40, 8),
             take(48, 15), // 5×3 классов одной строкой
             take(63, 15),
@@ -148,6 +157,35 @@ fn migrate_legacy_slot(slot_dir: &Path) -> io::Result<()> {
             take(187, 3),
             take(190, 9), // 3×3 культур
             mode_years_field,
+        ));
+    }
+    // Phase 24 / Этап 2B: добавляем EXTINCT-резервы до total = 30 политий.
+    // Это слоты для будущего spawn'а наследников.
+    while active_count < 30 {
+        active_count += 1;
+        polities_out.push_str(&format!(
+            "{:20}{:2}{:8}{:15}{:15}{:10}{:5}{:12}{:3}{:5}{:2}{:3}{:3}{:10}{:20}{:2}{:10}{:3}{:3}{:9}{:4}\n",
+            "",                  // name (пустое)
+            "00",                // region_id = 0 (не размещена)
+            "00000000",          // population
+            "000000000000000",   // classes (5×3)
+            "EXTINCT        ",   // prod_mode
+            "0000000000",        // labour_hours
+            "00000",             // surplus_rate
+            "000000000000",      // capital_stock
+            "000",               // class_tension
+            "00000",             // military
+            "00",                // at_war_with
+            "000",               // collapse_timer
+            "000",               // war_year
+            "PEACE     ",        // war_type
+            "",                  // ruler_name
+            "00",                // ruler_age
+            "",                  // ruler_trait
+            "000",               // ruler_reign
+            "000",               // consciousness
+            "000000000",         // culture
+            "0000",              // mode_years
         ));
     }
     fs::write(&regions_path, regions_out)?;

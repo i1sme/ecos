@@ -30,7 +30,7 @@ FILE SECTION.
 FD REGIONS-FILE.
 01 WS-REGION-REC  PIC X(80).
 FD POLITIES-FILE.
-01 WS-POLITY-REC  PIC X(180).
+01 WS-POLITY-REC  PIC X(200).
 
 FD YEAR-FILE.
 01 WS-YEAR-REC    PIC X(10).
@@ -55,6 +55,10 @@ WORKING-STORAGE SECTION.
 
 *> Размерности
 78 REGION-COUNT             VALUE 10.
+*> Phase 24 / Этап 2B — массив политий расширен до 30. Стартовых
+*> 10 живых; слоты 11..30 используются как «резерв» для spawn'а
+*> наследников при распаде больших политий. Регионов по-прежнему 10.
+78 POLITY-COUNT             VALUE 30.
 78 MARKET-COUNT             VALUE 8.
 *> Phase 24 — Этап 1: WORLD-REC-LEN убрана. Файл расщеплён, новые
 *> длины записей (ориентировочно 80 для regions, 160 для polities)
@@ -350,15 +354,32 @@ WORKING-STORAGE SECTION.
 *> что не возрождается через REBIRTH-DURATION.
 01 WS-MODE-EXTINCT     PIC X(15) VALUE "EXTINCT        ".
 
-*> Phase 24 / Этап 2A — порог разделения путей коллапса.
-*> Стресс-тест 1500 ходов с порогом=80k показал: 100% коллапсов идут
-*> в EXTINCT, REBIRTH-ветка мертва. Коридор «есть надежда» нужен.
-*> Понижено до 30k — это реально вымершее общество (одна-две деревни).
-*> Регион на 50k pop ещё может пережить тёмные века и восстать как FEUDAL.
-*>   pop < 30k                            → EXTINCT (навсегда)
-*>   pop ≥ 30k ∧ collapse-trigger сработал → COLLAPSED → REBIRTH
-*> Демографический коллапс реально необратим только на критическом дне.
-78 EXTINCT-POP-THRESHOLD    VALUE 30000.
+*> Phase 24 / Этап 2A/2B — пороги коллапсовых веток.
+*> Триггер срабатывает при pop < 80k (или capital < 100k). Внутри —
+*> три ветки в зависимости от размера:
+*>   pop ≥ LARGE-COLLAPSE-THRESHOLD (70k) → FRAGMENT (распад на наследника)
+*>   pop в 20..69k                        → COLLAPSED → REBIRTH (тёмные века)
+*>   pop < 20k                            → EXTINCT (полное вымирание)
+*> 20k порог EXTINCT — реально вымершее общество (несколько деревень).
+*> 70k порог FRAGMENT — империя на грани, но имеется демографический
+*> ресурс для нового государства (1/3 = ~23k жителей у наследника).
+78 EXTINCT-POP-THRESHOLD    VALUE 20000.
+
+*> Phase 24 / Этап 2B — порог фрагментации.
+*> Триггер коллапса срабатывает при `capital < 100k OR pop < 80k`,
+*> поэтому pop на момент извинения уже невелик. Чтобы FRAGMENT-путь
+*> вообще срабатывал, порог должен лежать в диапазоне реальных
+*> «коллапсовых» pop'ов (между EXTINCT-POP=30k и COLLAPSE-POP-FLOOR=80k).
+*>
+*>   pop ≥ 60k → FRAGMENT (империя распадается на наследника)
+*>   pop 30..60k → COLLAPSED → REBIRTH (тёмные века)
+*>   pop < 30k → EXTINCT (полное вымирание)
+*>
+*> 60k семантически означает: «у империи остался демографический ресурс
+*> для нового государства на её земле», но не для самовосстановления.
+78 LARGE-COLLAPSE-THRESHOLD VALUE 70000.
+78 HEIR-POP-FRACTION        VALUE 3.    *> 1/3 от родительского pop
+78 HEIR-CAPITAL-FRACTION    VALUE 4.    *> 1/4 от родительского capital
 01 WS-WAR-PEACE        PIC X(10) VALUE "PEACE     ".
 01 WS-WAR-DYNASTIC     PIC X(10) VALUE "DYNASTIC  ".
 01 WS-WAR-CRISIS       PIC X(10) VALUE "CRISIS    ".
@@ -379,11 +400,24 @@ WORKING-STORAGE SECTION.
 01 WS-NIDX            PIC 9.
 01 WS-MIDX            PIC 99.
 01 WS-NBREG           PIC 99.
+*> Phase 24 / Этап 2B: при поиске соседа neighbor-таблица возвращает
+*> region_id, а не polity_id. Промежуточная переменная — индекс региона
+*> соседа; затем через WS-REGION-OCCUPANT находим политию (или 0).
+01 WS-NB-REGION-ID    PIC 99.
+
+*> Phase 24 / Этап 2B: «кто живёт в регионе X». Заполняется при LOAD
+*> из WS-REGION-ID активных политий. Обновляется при mode-shift'ах:
+*> spawn'е наследника, EXTINCT, REBIRTH.
+*> Значение 0 = регион пуст (нет хозяина).
+01 WS-REGION-OCCUPANT OCCURS 10 TIMES PIC 99.
 01 WS-WIN-IDX         PIC 99.
 01 WS-LOSE-IDX        PIC 99.
 01 WS-COLLAPSE-CANDIDATE PIC 99.
 01 WS-CLAMP-IDX       PIC 99.
 01 WS-FOUND           PIC 9.
+*> Phase 24 / Этап 2B — индекс свободного EXTINCT-слота для spawn'а
+*> наследника (1..30) или 0 если все слоты заняты.
+01 WS-FOUND-SLOT      PIC 99.
 
 *> Parsing temporaries для decimal полей
 01 WS-TMP5            PIC 9(5).
@@ -439,11 +473,14 @@ WORKING-STORAGE SECTION.
    05 WS-NEIGHBOR-2        PIC 99.
    05 WS-NEIGHBOR-3        PIC 99.
 
-*> Phase 24 — Этап 1. WS-POLITIES — политический слой, отделён от
-*> географии. На Этапе 1 polity[i] всегда живёт в region[i], имена
-*> синхронизированы (WS-POLITY-NAME = WS-NAME).
-01 WS-POLITIES OCCURS 10 TIMES.
+*> Phase 24 — Этап 1: WS-POLITIES — политический слой, отделён от
+*> географии. Этап 2B: расширен до POLITY-COUNT (30) слотов; первые
+*> 10 — стартовые живые, 11..30 — резерв EXTINCT для spawn'а.
+*> WS-REGION-ID указывает в каком регионе живёт полития (1..10);
+*> для EXTINCT-слотов = 0.
+01 WS-POLITIES OCCURS 30 TIMES.
    05 WS-POLITY-NAME       PIC X(20).
+   05 WS-REGION-ID         PIC 99.
    05 WS-POPULATION        PIC 9(8).
    05 WS-PEASANTS-PCT      PIC 9(3).
    05 WS-ARTISANS-PCT      PIC 9(3).
@@ -602,6 +639,7 @@ MAIN-PARA.
     MOVE FUNCTION RANDOM(WS-YEAR) TO WS-RAND-RAW
     PERFORM INIT-MARKET
     PERFORM READ-WORLD
+    PERFORM BUILD-OCCUPANT-MAP
     PERFORM LOAD-RELATIONS
     PERFORM LOAD-TECH
     OPEN EXTEND CHRONICLE-FILE
@@ -718,10 +756,10 @@ LOAD-PERSISTED-PRICES.
 
 READ-WORLD.
 *>  Phase 24 — Этап 1: чтение двух файлов параллельно (regions.dat
-*>  и polities.dat). Цикл общий — на Этапе 1 индекс politiy = индекс
-*>  region. На Этапе 2+ цикл по политиям расщепится отдельно.
+*>  и polities.dat).
+*>  Phase 24 / Этап 2B: циклы расщеплены — регионов 10, политий 30.
+*>  Сначала 10 регионов, потом 30 политий (включая EXTINCT-резервы).
     OPEN INPUT REGIONS-FILE
-    OPEN INPUT POLITIES-FILE
     MOVE 0 TO WS-EOF
     PERFORM VARYING WS-IDX FROM 1 BY 1
             UNTIL WS-IDX > REGION-COUNT OR WS-EOF = 1
@@ -729,15 +767,48 @@ READ-WORLD.
             AT END     MOVE 1 TO WS-EOF
             NOT AT END PERFORM PARSE-REGION-RECORD
         END-READ
-        IF WS-EOF = 0
-            READ POLITIES-FILE INTO WS-POLITY-REC
-                AT END     MOVE 1 TO WS-EOF
-                NOT AT END PERFORM PARSE-POLITY-RECORD
-            END-READ
-        END-IF
     END-PERFORM
     CLOSE REGIONS-FILE
+
+    OPEN INPUT POLITIES-FILE
+    MOVE 0 TO WS-EOF
+    PERFORM VARYING WS-IDX FROM 1 BY 1
+            UNTIL WS-IDX > POLITY-COUNT OR WS-EOF = 1
+        READ POLITIES-FILE INTO WS-POLITY-REC
+            AT END     MOVE 1 TO WS-EOF
+            NOT AT END PERFORM PARSE-POLITY-RECORD
+        END-READ
+    END-PERFORM
     CLOSE POLITIES-FILE.
+
+EVAL-NB-OCCUPANT.
+*> Phase 24 / Этап 2B: преобразование «индекс региона» → «индекс политии,
+*> которая там живёт». Caller передаёт WS-NB-REGION-ID, получает WS-NBREG
+*> (polity_id, или 0 если регион пуст / out of range).
+    IF WS-NB-REGION-ID > 0 AND WS-NB-REGION-ID <= REGION-COUNT
+        MOVE WS-REGION-OCCUPANT(WS-NB-REGION-ID) TO WS-NBREG
+    ELSE
+        MOVE 0 TO WS-NBREG
+    END-IF.
+
+BUILD-OCCUPANT-MAP.
+*> Phase 24 / Этап 2B: реконструируем "кто живёт в регионе X" из
+*> region_id'ов политий. Вызывается после READ-WORLD каждый ход —
+*> легко синхронизирует таблицу с фактическим состоянием polities.
+*> EXTINCT/COLLAPSED политии тоже занимают свой регион (он не «пустой»
+*> в смысле территории) — оставляем их как occupant'ов. Только полностью
+*> пропавшие политии (region_id = 0) не учитываются.
+*> На пустой регион занятый только EXTINCT-resident логика отвечает
+*> через POLITY-DORMANT фильтр в neighbor-проверках.
+    PERFORM VARYING WS-RIDX FROM 1 BY 1 UNTIL WS-RIDX > REGION-COUNT
+        MOVE 0 TO WS-REGION-OCCUPANT(WS-RIDX)
+    END-PERFORM
+    PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > POLITY-COUNT
+        IF WS-REGION-ID(WS-IDX) > 0
+           AND WS-REGION-ID(WS-IDX) <= REGION-COUNT
+            MOVE WS-IDX TO WS-REGION-OCCUPANT(WS-REGION-ID(WS-IDX))
+        END-IF
+    END-PERFORM.
 
 PARSE-REGION-RECORD.
 *>  Геофон. Layout regions.dat (1-indexed COBOL):
@@ -759,59 +830,61 @@ PARSE-REGION-RECORD.
 PARSE-POLITY-RECORD.
 *>  Политический слой. Layout polities.dat (1-indexed COBOL):
 *>    POLITY-NAME    @ 1   len 20
-*>    POPULATION     @ 21  len 8
-*>    PEASANTS-PCT   @ 29  len 3
-*>    ARTISANS-PCT   @ 32  len 3
-*>    MERCHANTS-PCT  @ 35  len 3
-*>    NOBILITY-PCT   @ 38  len 3
-*>    CLERGY-PCT     @ 41  len 3
-*>    PROD-MODE      @ 44  len 15
-*>    LABOUR-HOURS   @ 59  len 10
-*>    SURPLUS-RATE   @ 69  len 5    (×100, делим)
-*>    CAPITAL-STOCK  @ 74  len 12   (×100, делим)
-*>    CLASS-TENSION  @ 86  len 3
-*>    MILITARY-STR   @ 89  len 5
-*>    AT-WAR-WITH    @ 94  len 2
-*>    COLLAPSE-TIMER @ 96  len 3
-*>    WAR-YEAR       @ 99  len 3
-*>    WAR-TYPE       @ 102 len 10
-*>    RULER-NAME     @ 112 len 20
-*>    RULER-AGE      @ 132 len 2
-*>    RULER-TRAIT    @ 134 len 10
-*>    RULER-REIGN    @ 144 len 3
-*>    CONSCIOUSNESS  @ 147 len 3
-*>    CULT-MIL       @ 150 len 3
-*>    CULT-MERC      @ 153 len 3
-*>    CULT-REL       @ 156 len 3
-*>    MODE-YEARS     @ 159 len 4   = 162 байт (запись)
+*>    REGION-ID      @ 21  len 2     ← Phase 24/Этап 2B
+*>    POPULATION     @ 23  len 8
+*>    PEASANTS-PCT   @ 31  len 3
+*>    ARTISANS-PCT   @ 34  len 3
+*>    MERCHANTS-PCT  @ 37  len 3
+*>    NOBILITY-PCT   @ 40  len 3
+*>    CLERGY-PCT     @ 43  len 3
+*>    PROD-MODE      @ 46  len 15
+*>    LABOUR-HOURS   @ 61  len 10
+*>    SURPLUS-RATE   @ 71  len 5    (×100, делим)
+*>    CAPITAL-STOCK  @ 76  len 12   (×100, делим)
+*>    CLASS-TENSION  @ 88  len 3
+*>    MILITARY-STR   @ 91  len 5
+*>    AT-WAR-WITH    @ 96  len 2
+*>    COLLAPSE-TIMER @ 98  len 3
+*>    WAR-YEAR       @ 101 len 3
+*>    WAR-TYPE       @ 104 len 10
+*>    RULER-NAME     @ 114 len 20
+*>    RULER-AGE      @ 134 len 2
+*>    RULER-TRAIT    @ 136 len 10
+*>    RULER-REIGN    @ 146 len 3
+*>    CONSCIOUSNESS  @ 149 len 3
+*>    CULT-MIL       @ 152 len 3
+*>    CULT-MERC      @ 155 len 3
+*>    CULT-REL       @ 158 len 3
+*>    MODE-YEARS     @ 161 len 4   = 164 байт (запись)
     MOVE WS-POLITY-REC(1:20)                   TO WS-POLITY-NAME(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(21:8))  TO WS-POPULATION(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(29:3))  TO WS-PEASANTS-PCT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(32:3))  TO WS-ARTISANS-PCT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(35:3))  TO WS-MERCHANTS-PCT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(38:3))  TO WS-NOBILITY-PCT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(41:3))  TO WS-CLERGY-PCT(WS-IDX)
-    MOVE WS-POLITY-REC(44:15)                  TO WS-PROD-MODE(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(59:10)) TO WS-LABOUR-HOURS(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(69:5))  TO WS-TMP5
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(21:2))  TO WS-REGION-ID(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(23:8))  TO WS-POPULATION(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(31:3))  TO WS-PEASANTS-PCT(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(34:3))  TO WS-ARTISANS-PCT(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(37:3))  TO WS-MERCHANTS-PCT(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(40:3))  TO WS-NOBILITY-PCT(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(43:3))  TO WS-CLERGY-PCT(WS-IDX)
+    MOVE WS-POLITY-REC(46:15)                  TO WS-PROD-MODE(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(61:10)) TO WS-LABOUR-HOURS(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(71:5))  TO WS-TMP5
     COMPUTE WS-SURPLUS-RATE(WS-IDX)  = WS-TMP5 / 100
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(74:12)) TO WS-TMP12
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(76:12)) TO WS-TMP12
     COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-TMP12 / 100
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(86:3))  TO WS-CLASS-TENSION(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(89:5))  TO WS-MILITARY-STRENGTH(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(94:2))  TO WS-AT-WAR-WITH(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(96:3))  TO WS-COLLAPSE-TIMER(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(99:3))  TO WS-WAR-YEAR(WS-IDX)
-    MOVE WS-POLITY-REC(102:10)                 TO WS-WAR-TYPE(WS-IDX)
-    MOVE WS-POLITY-REC(112:20)                 TO WS-RULER-NAME(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(132:2)) TO WS-RULER-AGE(WS-IDX)
-    MOVE WS-POLITY-REC(134:10)                 TO WS-RULER-TRAIT(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(144:3)) TO WS-RULER-REIGN(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(147:3)) TO WS-CONSCIOUSNESS(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(150:3)) TO WS-CULT-MIL(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(153:3)) TO WS-CULT-MERC(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(156:3)) TO WS-CULT-REL(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(159:4)) TO WS-MODE-YEARS(WS-IDX).
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(88:3))  TO WS-CLASS-TENSION(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(91:5))  TO WS-MILITARY-STRENGTH(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(96:2))  TO WS-AT-WAR-WITH(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(98:3))  TO WS-COLLAPSE-TIMER(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(101:3)) TO WS-WAR-YEAR(WS-IDX)
+    MOVE WS-POLITY-REC(104:10)                 TO WS-WAR-TYPE(WS-IDX)
+    MOVE WS-POLITY-REC(114:20)                 TO WS-RULER-NAME(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(134:2)) TO WS-RULER-AGE(WS-IDX)
+    MOVE WS-POLITY-REC(136:10)                 TO WS-RULER-TRAIT(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(146:3)) TO WS-RULER-REIGN(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(149:3)) TO WS-CONSCIOUSNESS(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(152:3)) TO WS-CULT-MIL(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(155:3)) TO WS-CULT-MERC(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(158:3)) TO WS-CULT-REL(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(161:4)) TO WS-MODE-YEARS(WS-IDX).
 
     MOVE 0         TO WS-OUTPUT-VALUE(WS-IDX)
     MOVE 0         TO WS-WAGE-FUND(WS-IDX)
@@ -938,7 +1011,7 @@ MARKET-AGGREGATE.
         PERFORM VARYING WS-MIDX FROM 1 BY 1
                 UNTIL WS-MIDX > MARKET-COUNT OR WS-FOUND = 1
             IF FUNCTION TRIM(WS-MKT-NAME(WS-MIDX)) =
-               FUNCTION TRIM(WS-PRIMARY-GOOD(WS-IDX))
+               FUNCTION TRIM(WS-PRIMARY-GOOD(WS-REGION-ID(WS-IDX)))
                 ADD WS-OUTPUT-VALUE(WS-IDX) TO WS-MKT-SUPPLY(WS-MIDX)
                 MOVE 1 TO WS-FOUND
             END-IF
@@ -1097,11 +1170,12 @@ CONSCIOUSNESS-ALL.
 
 CONSCIOUSNESS-CONTAGION.
     EVALUATE WS-NIDX
-        WHEN 1 MOVE WS-NEIGHBOR-1(WS-IDX) TO WS-NBREG
-        WHEN 2 MOVE WS-NEIGHBOR-2(WS-IDX) TO WS-NBREG
-        WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
+        WHEN 1 MOVE WS-NEIGHBOR-1(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 2 MOVE WS-NEIGHBOR-2(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 3 MOVE WS-NEIGHBOR-3(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
     END-EVALUATE
-    IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
+    PERFORM EVAL-NB-OCCUPANT
+    IF WS-NBREG > 0 AND WS-NBREG <= POLITY-COUNT
        AND WS-CLASS-TENSION(WS-NBREG) >= 90
         ADD CONSCIOUSNESS-SPREAD TO WS-CONSCIOUSNESS(WS-IDX)
     END-IF.
@@ -1143,7 +1217,7 @@ DRIFT-COMMERCE.
     IF WS-ARTISANS-PCT(WS-IDX) > DRIFT-COMMERCE-MIN-ART
        AND WS-MERCHANTS-PCT(WS-IDX) < REVOLUTION-CLASS-CAP
         MOVE DRIFT-COMMERCE-PERMIL TO WS-PROB-PERMIL
-        IF WS-TERRAIN(WS-IDX) = "COAST     "
+        IF WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "COAST     "
             ADD DRIFT-COMMERCE-COAST TO WS-PROB-PERMIL
         END-IF
         IF WS-RULER-TRAIT(WS-IDX) = "MERCANT   "
@@ -1210,7 +1284,7 @@ PROPAGATE-CRISIS.
                 UNTIL WS-MIDX > MARKET-COUNT OR WS-CRISIS-FLAGS(WS-IDX) = 1
             IF WS-MKT-CRISIS(WS-MIDX) = 1
                AND FUNCTION TRIM(WS-MKT-NAME(WS-MIDX)) =
-                   FUNCTION TRIM(WS-PRIMARY-GOOD(WS-IDX))
+                   FUNCTION TRIM(WS-PRIMARY-GOOD(WS-REGION-ID(WS-IDX)))
                 MOVE 1 TO WS-CRISIS-FLAGS(WS-IDX)
             END-IF
         END-PERFORM
@@ -1228,11 +1302,12 @@ TRADE-ALL.
 
 TRADE-ADD-NEIGHBOR.
     EVALUATE WS-NIDX
-        WHEN 1 MOVE WS-NEIGHBOR-1(WS-IDX) TO WS-NBREG
-        WHEN 2 MOVE WS-NEIGHBOR-2(WS-IDX) TO WS-NBREG
-        WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
+        WHEN 1 MOVE WS-NEIGHBOR-1(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 2 MOVE WS-NEIGHBOR-2(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 3 MOVE WS-NEIGHBOR-3(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
     END-EVALUATE
-    IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
+    PERFORM EVAL-NB-OCCUPANT
+    IF WS-NBREG > 0 AND WS-NBREG <= POLITY-COUNT
         COMPUTE WS-OUTPUT-VAL =
             WS-OUTPUT-VALUE(WS-NBREG) * TRADE-EXPORT-PCT / 100 / 3
         ADD WS-OUTPUT-VAL TO WS-NB-EXPORT
@@ -1288,7 +1363,7 @@ CLASS-WAR-CHECK.
             END-IF
             MOVE WS-YEAR           TO WS-CHRON-YEAR
             MOVE "CLASS-WAR      " TO WS-CHRON-TYPE
-            MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+            MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
             MOVE "Nobility represses revolt. Workers crushed." TO WS-CHRON-DESC
             PERFORM WRITE-CHRONICLE
 *>          Репрессия гасит классовое сознание.
@@ -1314,11 +1389,12 @@ DYNASTIC-WAR-NEIGHBOR.
 *> Чем стабильнее агрессор и чем нестабильнее сосед — тем вероятнее.
 *> Но даже у напряжённого агрессора и спокойного соседа есть ненулевой шанс.
     EVALUATE WS-NIDX
-        WHEN 1 MOVE WS-NEIGHBOR-1(WS-IDX) TO WS-NBREG
-        WHEN 2 MOVE WS-NEIGHBOR-2(WS-IDX) TO WS-NBREG
-        WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
+        WHEN 1 MOVE WS-NEIGHBOR-1(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 2 MOVE WS-NEIGHBOR-2(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 3 MOVE WS-NEIGHBOR-3(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
     END-EVALUATE
-    IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
+    PERFORM EVAL-NB-OCCUPANT
+    IF WS-NBREG > 0 AND WS-NBREG <= POLITY-COUNT
        AND WS-AT-WAR-WITH(WS-NBREG) = 0
        AND NOT POLITY-DORMANT(WS-NBREG)
 *>      Альянс полностью блокирует атаку (relation > +60).
@@ -1358,12 +1434,12 @@ DYNASTIC-WAR-NEIGHBOR.
             MOVE WS-WAR-DYNASTIC TO WS-WAR-TYPE(WS-NBREG)
             MOVE WS-YEAR           TO WS-CHRON-YEAR
             MOVE "WAR-START      "  TO WS-CHRON-TYPE
-            MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+            MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
             STRING FUNCTION TRIM(WS-RULER-NAME(WS-IDX)) DELIMITED SIZE
                    " of "                                DELIMITED SIZE
-                   FUNCTION TRIM(WS-NAME(WS-IDX))       DELIMITED SIZE
+                   FUNCTION TRIM(WS-POLITY-NAME(WS-IDX))       DELIMITED SIZE
                    " attacks "                           DELIMITED SIZE
-                   FUNCTION TRIM(WS-NAME(WS-NBREG))     DELIMITED SIZE
+                   FUNCTION TRIM(WS-POLITY-NAME(WS-NBREG))     DELIMITED SIZE
                    " (dynastic)."                        DELIMITED SIZE
                    INTO WS-CHRON-DESC
             PERFORM WRITE-CHRONICLE
@@ -1385,11 +1461,12 @@ CRISIS-WAR-FIND-TARGET.
 *> Вероятность: 400‰ × tension/100, cap 600‰.
 *> Высокий tension усиливает потребность правящего класса в внешнем враге.
     EVALUATE WS-NIDX
-        WHEN 1 MOVE WS-NEIGHBOR-1(WS-IDX) TO WS-NBREG
-        WHEN 2 MOVE WS-NEIGHBOR-2(WS-IDX) TO WS-NBREG
-        WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
+        WHEN 1 MOVE WS-NEIGHBOR-1(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 2 MOVE WS-NEIGHBOR-2(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 3 MOVE WS-NEIGHBOR-3(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
     END-EVALUATE
-    IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
+    PERFORM EVAL-NB-OCCUPANT
+    IF WS-NBREG > 0 AND WS-NBREG <= POLITY-COUNT
        AND WS-AT-WAR-WITH(WS-NBREG) = 0
        AND NOT POLITY-DORMANT(WS-NBREG)
         COMPUTE WS-PROB-PERMIL = CRISIS-WAR-BASE-PERMIL
@@ -1417,12 +1494,12 @@ CRISIS-WAR-FIND-TARGET.
                 WS-LABOUR-HOURS(WS-IDX) * CRISIS-WAR-LABOUR-PCT / 100
             MOVE WS-YEAR           TO WS-CHRON-YEAR
             MOVE "WAR-START      "  TO WS-CHRON-TYPE
-            MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+            MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
             STRING FUNCTION TRIM(WS-RULER-NAME(WS-IDX)) DELIMITED SIZE
                    " of "                                DELIMITED SIZE
-                   FUNCTION TRIM(WS-NAME(WS-IDX))       DELIMITED SIZE
+                   FUNCTION TRIM(WS-POLITY-NAME(WS-IDX))       DELIMITED SIZE
                    " strikes "                           DELIMITED SIZE
-                   FUNCTION TRIM(WS-NAME(WS-NBREG))     DELIMITED SIZE
+                   FUNCTION TRIM(WS-POLITY-NAME(WS-NBREG))     DELIMITED SIZE
                    ". Ruling class deflects unrest."     DELIMITED SIZE
                    INTO WS-CHRON-DESC
             PERFORM WRITE-CHRONICLE
@@ -1451,11 +1528,12 @@ IMPERIAL-WAR-TARGET.
 *> Альянс блокирует. Trait биас через APPLY-TRAIT-BIAS.
 *> WS-OUTPUT-VAL уже содержит положительный дефицит из CHECK.
     EVALUATE WS-NIDX
-        WHEN 1 MOVE WS-NEIGHBOR-1(WS-IDX) TO WS-NBREG
-        WHEN 2 MOVE WS-NEIGHBOR-2(WS-IDX) TO WS-NBREG
-        WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
+        WHEN 1 MOVE WS-NEIGHBOR-1(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 2 MOVE WS-NEIGHBOR-2(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 3 MOVE WS-NEIGHBOR-3(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
     END-EVALUATE
-    IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
+    PERFORM EVAL-NB-OCCUPANT
+    IF WS-NBREG > 0 AND WS-NBREG <= POLITY-COUNT
        AND WS-AT-WAR-WITH(WS-NBREG) = 0
        AND NOT POLITY-DORMANT(WS-NBREG)
        AND WS-REL-ROW(WS-IDX, WS-NBREG) <= RELATIONS-ALLIANCE
@@ -1483,12 +1561,12 @@ IMPERIAL-WAR-TARGET.
             MOVE WS-WAR-IMPERIAL TO WS-WAR-TYPE(WS-NBREG)
             MOVE WS-YEAR           TO WS-CHRON-YEAR
             MOVE "WAR-START      "  TO WS-CHRON-TYPE
-            MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+            MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
             STRING FUNCTION TRIM(WS-RULER-NAME(WS-IDX)) DELIMITED SIZE
                    " of "                                DELIMITED SIZE
-                   FUNCTION TRIM(WS-NAME(WS-IDX))       DELIMITED SIZE
+                   FUNCTION TRIM(WS-POLITY-NAME(WS-IDX))       DELIMITED SIZE
                    " declares imperial war on "         DELIMITED SIZE
-                   FUNCTION TRIM(WS-NAME(WS-NBREG))     DELIMITED SIZE
+                   FUNCTION TRIM(WS-POLITY-NAME(WS-NBREG))     DELIMITED SIZE
                    "."                                   DELIMITED SIZE
                    INTO WS-CHRON-DESC
             PERFORM WRITE-CHRONICLE
@@ -1608,12 +1686,12 @@ WAR-VICTORY.
 
     MOVE WS-YEAR             TO WS-CHRON-YEAR
     MOVE "WAR-END        "   TO WS-CHRON-TYPE
-    MOVE WS-NAME(WS-WIN-IDX) TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-WIN-IDX) TO WS-CHRON-RGON
     STRING FUNCTION TRIM(WS-RULER-NAME(WS-WIN-IDX)) DELIMITED SIZE
            " of "                                    DELIMITED SIZE
-           FUNCTION TRIM(WS-NAME(WS-WIN-IDX))       DELIMITED SIZE
+           FUNCTION TRIM(WS-POLITY-NAME(WS-WIN-IDX))       DELIMITED SIZE
            " defeats "                               DELIMITED SIZE
-           FUNCTION TRIM(WS-NAME(WS-LOSE-IDX))      DELIMITED SIZE
+           FUNCTION TRIM(WS-POLITY-NAME(WS-LOSE-IDX))      DELIMITED SIZE
            ". Capital seized."                       DELIMITED SIZE
            INTO WS-CHRON-DESC
     PERFORM WRITE-CHRONICLE
@@ -1710,10 +1788,10 @@ WAR-TECH-LOOT.
         END-EVALUATE
         MOVE WS-YEAR             TO WS-CHRON-YEAR
         MOVE "TECH-LOOT      "   TO WS-CHRON-TYPE
-        MOVE WS-NAME(WS-WIN-IDX) TO WS-CHRON-RGON
-        STRING FUNCTION TRIM(WS-NAME(WS-WIN-IDX))   DELIMITED SIZE
+        MOVE WS-POLITY-NAME(WS-WIN-IDX) TO WS-CHRON-RGON
+        STRING FUNCTION TRIM(WS-POLITY-NAME(WS-WIN-IDX))   DELIMITED SIZE
                " seizes "                            DELIMITED SIZE
-               FUNCTION TRIM(WS-NAME(WS-LOSE-IDX))   DELIMITED SIZE
+               FUNCTION TRIM(WS-POLITY-NAME(WS-LOSE-IDX))   DELIMITED SIZE
                "'s "                                 DELIMITED SIZE
                FUNCTION TRIM(WS-LOOT-NAME)           DELIMITED SIZE
                INTO WS-CHRON-DESC
@@ -1731,54 +1809,156 @@ COLLAPSE-ONE.
 *> Параметризуется через WS-COLLAPSE-CANDIDATE.
 *> Phase 10: перед сбросом популяции — миграция беженцев к соседям (30%).
 *>
-*> Phase 24 / Этап 2A — путь коллапса теперь раздваивается:
-*>   pop < EXTINCT-POP-THRESHOLD на момент извинения → EXTINCT (навсегда).
-*>     Демографический коллапс: некому переждать тёмные века.
-*>   pop ≥ THRESHOLD ∧ capital < COLLAPSE-CAPITAL-FLOOR → COLLAPSED → REBIRTH.
-*>     Экономический коллапс: люди живы, государство восстанет.
+*> Phase 24 / Этап 2A — путь коллапса раздваивается:
+*>   pop < EXTINCT-POP-THRESHOLD → EXTINCT (навсегда, демогр. коллапс)
+*>   pop ≥ THRESHOLD              → COLLAPSED → REBIRTH (экон. коллапс)
+*> Phase 24 / Этап 2B — добавлена третья ветка для крупных империй:
+*>   pop ≥ LARGE-COLLAPSE-THRESHOLD → SPAWN-HEIR + EXTINCT-родитель
+*>   Большая полития фрагментируется: на её земле возникает наследник
+*>   (новое имя, новый правитель, треть населения, четверть капитала).
+*>   Это исторично: империя пала, на месте Рима — варварские королевства.
 *>
-*> Условие триггера осталось прежним: capital < CAP-FLOOR OR pop < POP-FLOOR.
-*> POLITY-DORMANT гард (88-level) гарантирует idempotence — не коллапсируем
-*> уже COLLAPSED или EXTINCT.
+*> Условие триггера: capital < CAP-FLOOR OR pop < POP-FLOOR.
+*> POLITY-DORMANT гард — нельзя коллапсировать уже COLLAPSED/EXTINCT.
     IF NOT POLITY-DORMANT(WS-COLLAPSE-CANDIDATE)
        AND (WS-CAPITAL-STOCK(WS-COLLAPSE-CANDIDATE) < COLLAPSE-CAPITAL-FLOOR
             OR WS-POPULATION(WS-COLLAPSE-CANDIDATE) < COLLAPSE-POP-FLOOR)
-*>      Беженцы (общая часть для обоих путей): 30% pop → соседям.
+*>      Беженцы (общая часть): 30% pop → соседям.
         COMPUTE WS-MIGRATION-POOL =
             WS-POPULATION(WS-COLLAPSE-CANDIDATE) * MIGRATION-COLLAPSE-PCT
             / 100
         PERFORM DISTRIBUTE-REFUGEES
-*>      Сброс общих полей (нужен для обоих путей)
+*>      Сброс общих полей (для всех трёх путей)
         MOVE 0                 TO WS-MODE-YEARS(WS-COLLAPSE-CANDIDATE)
-        MOVE 0                 TO WS-CAPITAL-STOCK(WS-COLLAPSE-CANDIDATE)
         MOVE 0                 TO WS-CLASS-TENSION(WS-COLLAPSE-CANDIDATE)
         MOVE 0                 TO WS-NOBILITY-PCT(WS-COLLAPSE-CANDIDATE)
         MOVE 0                 TO WS-MILITARY-STRENGTH(WS-COLLAPSE-CANDIDATE)
         MOVE WS-YEAR           TO WS-CHRON-YEAR
-        MOVE WS-NAME(WS-COLLAPSE-CANDIDATE) TO WS-CHRON-RGON
-        IF WS-POPULATION(WS-COLLAPSE-CANDIDATE) < EXTINCT-POP-THRESHOLD
-*>          EXTINCT-путь: население ниже порога — государство и народ
-*>          исчезают окончательно. 30% уже ушли беженцами; остальные
-*>          растворяются в общинах соседей или вымирают. На карте
-*>          остаётся пустая территория.
+        MOVE WS-POLITY-NAME(WS-COLLAPSE-CANDIDATE) TO WS-CHRON-RGON
+        IF WS-POPULATION(WS-COLLAPSE-CANDIDATE) >= LARGE-COLLAPSE-THRESHOLD
+*>          FRAGMENT-путь: крупная империя распадается. Наследник
+*>          spawn'ится в свободном слоте до того как родителя обнулим.
+            PERFORM SPAWN-HEIR
             MOVE WS-MODE-EXTINCT  TO WS-PROD-MODE(WS-COLLAPSE-CANDIDATE)
             MOVE 0                TO WS-POPULATION(WS-COLLAPSE-CANDIDATE)
             MOVE 0                TO WS-LABOUR-HOURS(WS-COLLAPSE-CANDIDATE)
+            MOVE 0                TO WS-CAPITAL-STOCK(WS-COLLAPSE-CANDIDATE)
             MOVE 0                TO WS-COLLAPSE-TIMER(WS-COLLAPSE-CANDIDATE)
+*>          Родитель освобождает регион (наследник занял его в SPAWN-HEIR).
+            MOVE 0                TO WS-REGION-ID(WS-COLLAPSE-CANDIDATE)
+            MOVE "FRAGMENT       " TO WS-CHRON-TYPE
+            IF WS-FOUND-SLOT > 0
+                MOVE "Empire fragments. New polity rises in its lands."
+                    TO WS-CHRON-DESC
+            ELSE
+*>              Все слоты заняты — наследника нет, регион просто пуст.
+                MOVE "Empire fragments. No successor — slots exhausted."
+                    TO WS-CHRON-DESC
+            END-IF
+        ELSE IF WS-POPULATION(WS-COLLAPSE-CANDIDATE) < EXTINCT-POP-THRESHOLD
+*>          EXTINCT-путь: население ниже порога — окончательное вымирание.
+            MOVE WS-MODE-EXTINCT  TO WS-PROD-MODE(WS-COLLAPSE-CANDIDATE)
+            MOVE 0                TO WS-POPULATION(WS-COLLAPSE-CANDIDATE)
+            MOVE 0                TO WS-LABOUR-HOURS(WS-COLLAPSE-CANDIDATE)
+            MOVE 0                TO WS-CAPITAL-STOCK(WS-COLLAPSE-CANDIDATE)
+            MOVE 0                TO WS-COLLAPSE-TIMER(WS-COLLAPSE-CANDIDATE)
+*>          Освобождаем occupancy региона перед обнулением region_id.
+            IF WS-REGION-ID(WS-COLLAPSE-CANDIDATE) > 0
+                MOVE 0 TO WS-REGION-OCCUPANT(
+                    WS-REGION-ID(WS-COLLAPSE-CANDIDATE))
+            END-IF
+            MOVE 0                TO WS-REGION-ID(WS-COLLAPSE-CANDIDATE)
             MOVE "EXTINCT        " TO WS-CHRON-TYPE
             MOVE "Polity ceases to exist. Region falls silent."
                 TO WS-CHRON-DESC
         ELSE
-*>          COLLAPSED-путь (старое поведение): тёмные века, через
-*>          REBIRTH-DURATION ходов восстаёт как FEUDAL.
+*>          COLLAPSED-путь: тёмные века, через REBIRTH-DURATION оживёт.
+*>          region_id остаётся — полития формально занимает свою территорию.
             MOVE WS-MODE-COLLAPSED TO WS-PROD-MODE(WS-COLLAPSE-CANDIDATE)
             MOVE COLLAPSED-POP     TO WS-POPULATION(WS-COLLAPSE-CANDIDATE)
             MOVE COLLAPSED-LABOUR  TO WS-LABOUR-HOURS(WS-COLLAPSE-CANDIDATE)
+            MOVE 0                 TO WS-CAPITAL-STOCK(WS-COLLAPSE-CANDIDATE)
             MOVE 1                 TO WS-COLLAPSE-TIMER(WS-COLLAPSE-CANDIDATE)
             MOVE "COLLAPSE       " TO WS-CHRON-TYPE
             MOVE "State collapses. Dark age begins." TO WS-CHRON-DESC
         END-IF
+        END-IF
         PERFORM WRITE-CHRONICLE
+    END-IF.
+
+FIND-EXTINCT-SLOT.
+*>  Phase 24 / Этап 2B — ищем первый слот политии в EXTINCT с region_id=0
+*>  (т.е. совсем неактивный, не привязан к региону). Возвращает индекс
+*>  в WS-FOUND-SLOT (1..30) или 0 если все заняты.
+    MOVE 0 TO WS-FOUND-SLOT
+    PERFORM VARYING WS-PIDX FROM 1 BY 1
+            UNTIL WS-PIDX > POLITY-COUNT OR WS-FOUND-SLOT > 0
+        IF POLITY-EXTINCT(WS-PIDX)
+           AND WS-REGION-ID(WS-PIDX) = 0
+            MOVE WS-PIDX TO WS-FOUND-SLOT
+        END-IF
+    END-PERFORM.
+
+SPAWN-HEIR.
+*>  Phase 24 / Этап 2B. Caller: WS-COLLAPSE-CANDIDATE — родитель,
+*>  крупная полития на грани распада. Здесь:
+*>  1. Находим свободный EXTINCT-слот.
+*>  2. Активируем как наследника в том же регионе с долей ресурсов.
+*>  3. Обновляем WS-REGION-OCCUPANT — теперь регион принадлежит наследнику.
+*>  Если свободного слота нет — no-op (caller уведомит в хронике).
+    PERFORM FIND-EXTINCT-SLOT
+    IF WS-FOUND-SLOT > 0
+*>      Имя наследника: «Neo-<имя территории>». Берём WS-NAME через
+*>      region_id (стабильное географическое имя), а не WS-POLITY-NAME
+*>      родителя — иначе при серии последовательных распадов копится
+*>      рекурсивный префикс «Neo-Neo-Neo-X».
+        MOVE SPACES                TO WS-POLITY-NAME(WS-FOUND-SLOT)
+        STRING "Neo-"              DELIMITED SIZE
+               FUNCTION TRIM(
+                   WS-NAME(WS-REGION-ID(WS-COLLAPSE-CANDIDATE)))
+                                   DELIMITED SIZE
+            INTO WS-POLITY-NAME(WS-FOUND-SLOT)
+        END-STRING
+*>      Размещение: тот же регион что у родителя.
+        MOVE WS-REGION-ID(WS-COLLAPSE-CANDIDATE)
+            TO WS-REGION-ID(WS-FOUND-SLOT)
+*>      Mode и счётчик эпохи: новый феодальный отсчёт.
+        MOVE WS-MODE-FEUDAL        TO WS-PROD-MODE(WS-FOUND-SLOT)
+        MOVE 0                     TO WS-MODE-YEARS(WS-FOUND-SLOT)
+*>      Население: 1/3 от родителя (после миграции беженцев).
+        COMPUTE WS-POPULATION(WS-FOUND-SLOT) =
+            WS-POPULATION(WS-COLLAPSE-CANDIDATE) / HEIR-POP-FRACTION
+        COMPUTE WS-LABOUR-HOURS(WS-FOUND-SLOT) =
+            WS-POPULATION(WS-FOUND-SLOT) * LABOUR-PER-CAPITA
+*>      Капитал: 1/4 от родителя.
+        COMPUTE WS-CAPITAL-STOCK(WS-FOUND-SLOT) =
+            WS-CAPITAL-STOCK(WS-COLLAPSE-CANDIDATE) / HEIR-CAPITAL-FRACTION
+*>      Классы и социальные параметры — feudal-defaults (как при REBIRTH).
+        MOVE REBIRTH-PEASANT-PCT   TO WS-PEASANTS-PCT(WS-FOUND-SLOT)
+        MOVE REBIRTH-ARTISAN-PCT   TO WS-ARTISANS-PCT(WS-FOUND-SLOT)
+        MOVE REBIRTH-MERCHANT-PCT  TO WS-MERCHANTS-PCT(WS-FOUND-SLOT)
+        MOVE REBIRTH-NOBILITY-PCT  TO WS-NOBILITY-PCT(WS-FOUND-SLOT)
+        MOVE REBIRTH-CLERGY-PCT    TO WS-CLERGY-PCT(WS-FOUND-SLOT)
+        MOVE REBIRTH-SURPLUS       TO WS-SURPLUS-RATE(WS-FOUND-SLOT)
+        MOVE REBIRTH-TENSION       TO WS-CLASS-TENSION(WS-FOUND-SLOT)
+        MOVE 0                     TO WS-MILITARY-STRENGTH(WS-FOUND-SLOT)
+        MOVE 0                     TO WS-AT-WAR-WITH(WS-FOUND-SLOT)
+        MOVE 0                     TO WS-WAR-YEAR(WS-FOUND-SLOT)
+        MOVE WS-WAR-PEACE          TO WS-WAR-TYPE(WS-FOUND-SLOT)
+        MOVE 0                     TO WS-COLLAPSE-TIMER(WS-FOUND-SLOT)
+*>      Сознание и культура: новое государство, начинает с малого.
+*>      Не наследует от родителя — это другой народ/династия.
+        MOVE CONSCIOUSNESS-INIT    TO WS-CONSCIOUSNESS(WS-FOUND-SLOT)
+        MOVE 2                     TO WS-CULT-MIL(WS-FOUND-SLOT)
+        MOVE 0                     TO WS-CULT-MERC(WS-FOUND-SLOT)
+        MOVE 8                     TO WS-CULT-REL(WS-FOUND-SLOT)
+*>      Назначаем правителя через SUCCESSION-подобную логику.
+*>      Используем существующий пул имён.
+        MOVE WS-FOUND-SLOT TO WS-IDX
+        PERFORM SUCCESSION
+*>      Регион теперь принадлежит наследнику — обновляем occupant.
+        MOVE WS-FOUND-SLOT
+            TO WS-REGION-OCCUPANT(WS-REGION-ID(WS-FOUND-SLOT))
     END-IF.
 
 DISTRIBUTE-REFUGEES.
@@ -1795,22 +1975,30 @@ DISTRIBUTE-REFUGEES.
 
 REFUGEE-COUNT-NB.
     EVALUATE WS-NIDX
-        WHEN 1 MOVE WS-NEIGHBOR-1(WS-COLLAPSE-CANDIDATE) TO WS-NBREG
-        WHEN 2 MOVE WS-NEIGHBOR-2(WS-COLLAPSE-CANDIDATE) TO WS-NBREG
-        WHEN 3 MOVE WS-NEIGHBOR-3(WS-COLLAPSE-CANDIDATE) TO WS-NBREG
+        WHEN 1 MOVE WS-NEIGHBOR-1(WS-REGION-ID(WS-COLLAPSE-CANDIDATE))
+                                                       TO WS-NB-REGION-ID
+        WHEN 2 MOVE WS-NEIGHBOR-2(WS-REGION-ID(WS-COLLAPSE-CANDIDATE))
+                                                       TO WS-NB-REGION-ID
+        WHEN 3 MOVE WS-NEIGHBOR-3(WS-REGION-ID(WS-COLLAPSE-CANDIDATE))
+                                                       TO WS-NB-REGION-ID
     END-EVALUATE
-    IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
+    PERFORM EVAL-NB-OCCUPANT
+    IF WS-NBREG > 0 AND WS-NBREG <= POLITY-COUNT
        AND NOT POLITY-DORMANT(WS-NBREG)
         ADD 1 TO WS-LIVING-NEIGHBORS
     END-IF.
 
 REFUGEE-ABSORB-NB.
     EVALUATE WS-NIDX
-        WHEN 1 MOVE WS-NEIGHBOR-1(WS-COLLAPSE-CANDIDATE) TO WS-NBREG
-        WHEN 2 MOVE WS-NEIGHBOR-2(WS-COLLAPSE-CANDIDATE) TO WS-NBREG
-        WHEN 3 MOVE WS-NEIGHBOR-3(WS-COLLAPSE-CANDIDATE) TO WS-NBREG
+        WHEN 1 MOVE WS-NEIGHBOR-1(WS-REGION-ID(WS-COLLAPSE-CANDIDATE))
+                                                       TO WS-NB-REGION-ID
+        WHEN 2 MOVE WS-NEIGHBOR-2(WS-REGION-ID(WS-COLLAPSE-CANDIDATE))
+                                                       TO WS-NB-REGION-ID
+        WHEN 3 MOVE WS-NEIGHBOR-3(WS-REGION-ID(WS-COLLAPSE-CANDIDATE))
+                                                       TO WS-NB-REGION-ID
     END-EVALUATE
-    IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
+    PERFORM EVAL-NB-OCCUPANT
+    IF WS-NBREG > 0 AND WS-NBREG <= POLITY-COUNT
        AND NOT POLITY-DORMANT(WS-NBREG)
         ADD WS-REFUGEE-SHARE TO WS-POPULATION(WS-NBREG)
         ADD MIGRATION-TENSION-DELTA TO WS-CLASS-TENSION(WS-NBREG)
@@ -1818,9 +2006,9 @@ REFUGEE-ABSORB-NB.
         PERFORM CLAMP-TENSION
         MOVE WS-YEAR              TO WS-CHRON-YEAR
         MOVE "REFUGEES       "    TO WS-CHRON-TYPE
-        MOVE WS-NAME(WS-NBREG)    TO WS-CHRON-RGON
+        MOVE WS-POLITY-NAME(WS-NBREG)    TO WS-CHRON-RGON
         STRING "Refugees from "                                DELIMITED SIZE
-               FUNCTION TRIM(WS-NAME(WS-COLLAPSE-CANDIDATE))   DELIMITED SIZE
+               FUNCTION TRIM(WS-POLITY-NAME(WS-COLLAPSE-CANDIDATE))   DELIMITED SIZE
                " arrive. Pop +"                                DELIMITED SIZE
                WS-REFUGEE-SHARE                                DELIMITED SIZE
                INTO WS-CHRON-DESC
@@ -1844,7 +2032,7 @@ DISTRIBUTE-ALL.
                     MOVE 2 TO WS-HUNGER-FLAGS(WS-IDX)
                     MOVE WS-YEAR TO WS-CHRON-YEAR
                     MOVE "FAMINE         " TO WS-CHRON-TYPE
-                    MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
+                    MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
                     MOVE "Severe famine. Wage fund collapses below 70%."
                         TO WS-CHRON-DESC
                     PERFORM WRITE-CHRONICLE
@@ -1989,7 +2177,7 @@ REVOLUTION.
 *> сброс сознания (цикл переустанавливается).
     MOVE WS-YEAR             TO WS-CHRON-YEAR
     MOVE "REVOLUTION     "   TO WS-CHRON-TYPE
-    MOVE WS-NAME(WS-IDX)     TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-IDX)     TO WS-CHRON-RGON
 
     MOVE 0 TO WS-NOBILITY-PCT(WS-IDX)
 
@@ -2064,7 +2252,7 @@ REVOLUTION.
                 MOVE 0                 TO WS-MODE-YEARS(WS-IDX)
                 MOVE WS-YEAR           TO WS-CHRON-YEAR
                 MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
-                MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+                MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
                 MOVE "Slave -> Feudal. Slaves rise, antiquity falls."
                     TO WS-CHRON-DESC
                 PERFORM WRITE-CHRONICLE
@@ -2084,7 +2272,7 @@ REVOLUTION.
                 MOVE 0                 TO WS-MODE-YEARS(WS-IDX)
                 MOVE WS-YEAR           TO WS-CHRON-YEAR
                 MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
-                MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+                MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
                 MOVE "Mercantile -> Proto-Industrial. Bourgeois revolution."
                     TO WS-CHRON-DESC
                 PERFORM WRITE-CHRONICLE
@@ -2097,7 +2285,7 @@ REVOLUTION.
                 MOVE 0                  TO WS-MODE-YEARS(WS-IDX)
                 MOVE WS-YEAR            TO WS-CHRON-YEAR
                 MOVE "MODE-SHIFT     "  TO WS-CHRON-TYPE
-                MOVE WS-NAME(WS-IDX)    TO WS-CHRON-RGON
+                MOVE WS-POLITY-NAME(WS-IDX)    TO WS-CHRON-RGON
                 MOVE "Proto-Ind -> Industrial. Workers' movement breaks through."
                     TO WS-CHRON-DESC
                 PERFORM WRITE-CHRONICLE
@@ -2110,7 +2298,7 @@ REVOLUTION.
             MOVE 5.00               TO WS-SURPLUS-RATE(WS-IDX)
             MOVE WS-YEAR            TO WS-CHRON-YEAR
             MOVE "MODE-SHIFT     "  TO WS-CHRON-TYPE
-            MOVE WS-NAME(WS-IDX)    TO WS-CHRON-RGON
+            MOVE WS-POLITY-NAME(WS-IDX)    TO WS-CHRON-RGON
             MOVE "Imperial -> Socialist. Workers control means of production."
                 TO WS-CHRON-DESC
             PERFORM WRITE-CHRONICLE
@@ -2157,7 +2345,7 @@ ACCUMULATE-ALL.
                         MOVE 0               TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR         TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
-                        MOVE WS-NAME(WS-IDX) TO WS-CHRON-RGON
+                        MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
                         MOVE "Primitive -> Slave. First city-state forms."
                             TO WS-CHRON-DESC
                         PERFORM WRITE-CHRONICLE
@@ -2182,7 +2370,7 @@ ACCUMULATE-ALL.
                         MOVE 0               TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR         TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
-                        MOVE WS-NAME(WS-IDX) TO WS-CHRON-RGON
+                        MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
                         MOVE "Slave -> Feudal. Manorial order replaces antiquity."
                             TO WS-CHRON-DESC
                         PERFORM WRITE-CHRONICLE
@@ -2213,7 +2401,7 @@ ACCUMULATE-ALL.
                         MOVE 0                TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR          TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
-                        MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
+                        MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
                         MOVE "Feudal -> Mercantile. Trade capital accumulated."
                             TO WS-CHRON-DESC
                         PERFORM WRITE-CHRONICLE
@@ -2243,7 +2431,7 @@ ACCUMULATE-ALL.
                         MOVE 0                TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR          TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
-                        MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
+                        MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
                         MOVE "Mercantile -> Proto-Industrial. Manufactures rise."
                             TO WS-CHRON-DESC
                         PERFORM WRITE-CHRONICLE
@@ -2268,7 +2456,7 @@ ACCUMULATE-ALL.
                         MOVE 0                TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR          TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
-                        MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
+                        MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
                         MOVE "Proto-Ind -> Industrial. Factory wage labour wins."
                             TO WS-CHRON-DESC
                         PERFORM WRITE-CHRONICLE
@@ -2297,7 +2485,7 @@ ACCUMULATE-ALL.
                         MOVE 0                TO WS-MODE-YEARS(WS-IDX)
                         MOVE WS-YEAR          TO WS-CHRON-YEAR
                         MOVE "MODE-SHIFT     " TO WS-CHRON-TYPE
-                        MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
+                        MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
                         MOVE "Industrial -> Imperial. Finance capital and monopoly."
                             TO WS-CHRON-DESC
                         PERFORM WRITE-CHRONICLE
@@ -2323,12 +2511,14 @@ ACCUMULATE-ALL.
                     MOVE WS-WAR-PEACE     TO WS-WAR-TYPE(WS-IDX)
                     MOVE 0                TO WS-AT-WAR-WITH(WS-IDX)
                     MOVE CONSCIOUSNESS-INIT TO WS-CONSCIOUSNESS(WS-IDX)
-*>                  Phase 24 — Этап 1: возрождение использует то же имя
-*>                  что у региона (пока polity=region 1:1).
-                    MOVE WS-NAME(WS-IDX)  TO WS-POLITY-NAME(WS-IDX)
+*>                  Phase 24 / Этап 2B: имя политии при REBIRTH сохраняется.
+*>                  Если это была стартовая полития (slot 1..10) — её
+*>                  WS-POLITY-NAME совпадает с WS-NAME региона. Если это
+*>                  наследник (slot 11..30, имя «Neo-X») — он сохраняет
+*>                  своё имя при возрождении.
                     MOVE WS-YEAR          TO WS-CHRON-YEAR
                     MOVE "REBIRTH        " TO WS-CHRON-TYPE
-                    MOVE WS-NAME(WS-IDX)  TO WS-CHRON-RGON
+                    MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
                     MOVE "New state rises from the ashes. Feudal order restored."
                         TO WS-CHRON-DESC
                     PERFORM WRITE-CHRONICLE
@@ -2427,13 +2617,13 @@ CALC-MILITARY.
 WRITE-WORLD.
 *>  Phase 24 — Этап 1: simulate переписывает только polities.dat.
 *>  regions.dat статичен — пишется один раз при world-gen и больше не
-*>  меняется (terrain/climate/neighbors не эволюционируют). Это убирает
-*>  один disk-IO/turn и явно отделяет геофон от политики.
+*>  меняется. Phase 24/Этап 2B: пишем 30 политий (живые + EXTINCT-резервы).
     OPEN OUTPUT POLITIES-FILE
-    PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
+    PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > POLITY-COUNT
         MOVE SPACES TO WS-OUT-LINE
         STRING
             WS-POLITY-NAME(WS-IDX)       DELIMITED SIZE
+            WS-REGION-ID(WS-IDX)         DELIMITED SIZE
             WS-POPULATION(WS-IDX)        DELIMITED SIZE
             WS-PEASANTS-PCT(WS-IDX)      DELIMITED SIZE
             WS-ARTISANS-PCT(WS-IDX)      DELIMITED SIZE
@@ -2523,10 +2713,10 @@ CHRON-RULER-DEATH.
 *> Записывает смерть текущего правителя в хронику.
     MOVE WS-YEAR             TO WS-CHRON-YEAR
     MOVE "RULER-DEATH    "   TO WS-CHRON-TYPE
-    MOVE WS-NAME(WS-IDX)     TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-IDX)     TO WS-CHRON-RGON
     STRING FUNCTION TRIM(WS-RULER-NAME(WS-IDX))   DELIMITED SIZE
            " of "                                  DELIMITED SIZE
-           FUNCTION TRIM(WS-NAME(WS-IDX))         DELIMITED SIZE
+           FUNCTION TRIM(WS-POLITY-NAME(WS-IDX))         DELIMITED SIZE
            " dies. Reign of "                      DELIMITED SIZE
            WS-RULER-REIGN(WS-IDX)                  DELIMITED SIZE
            " years ends."                          DELIMITED SIZE
@@ -2581,10 +2771,10 @@ SUCCESSION.
 
     MOVE WS-YEAR             TO WS-CHRON-YEAR
     MOVE "RULER-RISE     "   TO WS-CHRON-TYPE
-    MOVE WS-NAME(WS-IDX)     TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-IDX)     TO WS-CHRON-RGON
     STRING FUNCTION TRIM(WS-RULER-NAME(WS-IDX))    DELIMITED SIZE
            " ascends in "                           DELIMITED SIZE
-           FUNCTION TRIM(WS-NAME(WS-IDX))          DELIMITED SIZE
+           FUNCTION TRIM(WS-POLITY-NAME(WS-IDX))          DELIMITED SIZE
            ". Trait: "                              DELIMITED SIZE
            FUNCTION TRIM(WS-RULER-TRAIT(WS-IDX))   DELIMITED SIZE
            "."                                      DELIMITED SIZE
@@ -2756,13 +2946,13 @@ TECH-COMPUTE-INC.
 *>  Terrain match: MOUNTAINS↔PROD, COAST↔ORG, PLAINS↔KNOW, FOREST↔POW
 *>  Применяется как ×1.5 (не +) — структурное преимущество.
     EVALUATE TRUE
-        WHEN WS-BIDX = 1 AND WS-TERRAIN(WS-IDX) = "MOUNTAINS "
+        WHEN WS-BIDX = 1 AND WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "MOUNTAINS "
             COMPUTE WS-TECH-INC = WS-TECH-INC * 3 / 2
-        WHEN WS-BIDX = 2 AND WS-TERRAIN(WS-IDX) = "COAST     "
+        WHEN WS-BIDX = 2 AND WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "COAST     "
             COMPUTE WS-TECH-INC = WS-TECH-INC * 3 / 2
-        WHEN WS-BIDX = 3 AND WS-TERRAIN(WS-IDX) = "PLAINS    "
+        WHEN WS-BIDX = 3 AND WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "PLAINS    "
             COMPUTE WS-TECH-INC = WS-TECH-INC * 3 / 2
-        WHEN WS-BIDX = 4 AND WS-TERRAIN(WS-IDX) = "FOREST    "
+        WHEN WS-BIDX = 4 AND WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "FOREST    "
             COMPUTE WS-TECH-INC = WS-TECH-INC * 3 / 2
     END-EVALUATE
 *>  Empiricism (KNOW L3 alt 1) — глобальный множитель скорости ×1.5.
@@ -2839,11 +3029,12 @@ TECH-DIFFUSION-NB.
 *> Caller: WS-IDX, WS-BIDX, WS-NIDX. Если у соседа n тех уровень >= наш +1
 *> (т.е. нам ещё не достигнуто), ставим WS-DIFFUSION-FOUND = 1.
     EVALUATE WS-NIDX
-        WHEN 1 MOVE WS-NEIGHBOR-1(WS-IDX) TO WS-NBREG
-        WHEN 2 MOVE WS-NEIGHBOR-2(WS-IDX) TO WS-NBREG
-        WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
+        WHEN 1 MOVE WS-NEIGHBOR-1(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 2 MOVE WS-NEIGHBOR-2(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 3 MOVE WS-NEIGHBOR-3(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
     END-EVALUATE
-    IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
+    PERFORM EVAL-NB-OCCUPANT
+    IF WS-NBREG > 0 AND WS-NBREG <= POLITY-COUNT
        AND NOT POLITY-DORMANT(WS-NBREG)
        AND WS-TECH-LEVEL(WS-NBREG, WS-BIDX) > WS-TECH-LEVEL(WS-IDX, WS-BIDX)
         MOVE 1 TO WS-DIFFUSION-FOUND
@@ -2892,15 +3083,15 @@ PICK-PROD-L3.
         ADD 20 TO WS-ALT-WEIGHT-1
     END-IF
 *>  Forging — горы или военная знать
-    IF WS-TERRAIN(WS-IDX) = "MOUNTAINS "
+    IF WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "MOUNTAINS "
         ADD 30 TO WS-ALT-WEIGHT-2
     END-IF
     IF WS-NOBILITY-PCT(WS-IDX) >= 5
         ADD 20 TO WS-ALT-WEIGHT-2
     END-IF
 *>  Hydraulics — равнины или побережье, мерчантильный режим
-    IF WS-TERRAIN(WS-IDX) = "PLAINS    "
-       OR WS-TERRAIN(WS-IDX) = "COAST     "
+    IF WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "PLAINS    "
+       OR WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "COAST     "
         ADD 30 TO WS-ALT-WEIGHT-3
     END-IF
     IF WS-PROD-MODE(WS-IDX) = WS-MODE-MERCANTILE
@@ -3054,10 +3245,10 @@ PICK-PROD-L4.
             END-IF
         WHEN 3
 *>          Hydraulics: Wind (coast) vs Tidal (also coast)
-            IF WS-TERRAIN(WS-IDX) = "PLAINS    "
+            IF WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "PLAINS    "
                 ADD 30 TO WS-ALT-WEIGHT-1
             END-IF
-            IF WS-TERRAIN(WS-IDX) = "COAST     "
+            IF WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "COAST     "
                 ADD 30 TO WS-ALT-WEIGHT-2
             END-IF
     END-EVALUATE.
@@ -3151,8 +3342,8 @@ PICK-POW-L4.
             IF WS-PROD-MODE(WS-IDX) = WS-MODE-SOCIALIST
                 ADD 30 TO WS-ALT-WEIGHT-1
             END-IF
-            IF WS-TERRAIN(WS-IDX) = "MOUNTAINS "
-               OR WS-TERRAIN(WS-IDX) = "FOREST    "
+            IF WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "MOUNTAINS "
+               OR WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "FOREST    "
                 ADD 30 TO WS-ALT-WEIGHT-2
             END-IF
     END-EVALUATE.
@@ -3162,7 +3353,7 @@ CHRON-TECH-LEARNED.
 *> Записывает событие в хронику с правильным именем тех'а.
     MOVE WS-YEAR             TO WS-CHRON-YEAR
     MOVE "TECH-LEARNED   "   TO WS-CHRON-TYPE
-    MOVE WS-NAME(WS-IDX)     TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-IDX)     TO WS-CHRON-RGON
     EVALUATE TRUE
         WHEN WS-BIDX = 1 AND WS-TECH-LEVEL(WS-IDX, 1) = 1
             MOVE "Bronze discovered. Military strengthens."
@@ -3430,11 +3621,12 @@ CULTURE-DIFFUSE-NEIGHBOR.
 *> соседа: если у соседа какой-то вектор больше нашего на ≥30, наш +1.
 *> COLLAPSED-сосед не передаёт — связь оборвана.
     EVALUATE WS-NIDX
-        WHEN 1 MOVE WS-NEIGHBOR-1(WS-IDX) TO WS-NBREG
-        WHEN 2 MOVE WS-NEIGHBOR-2(WS-IDX) TO WS-NBREG
-        WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
+        WHEN 1 MOVE WS-NEIGHBOR-1(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 2 MOVE WS-NEIGHBOR-2(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 3 MOVE WS-NEIGHBOR-3(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
     END-EVALUATE
-    IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
+    PERFORM EVAL-NB-OCCUPANT
+    IF WS-NBREG > 0 AND WS-NBREG <= POLITY-COUNT
        AND NOT POLITY-DORMANT(WS-NBREG)
         IF WS-CULT-MIL(WS-NBREG) >=
               WS-CULT-MIL(WS-IDX) + CULTURE-DIFFUSION-MIN
@@ -3478,13 +3670,13 @@ PICK-INNOVATION.
         WHEN WS-RAND-INT < 200
 *>          IRON-PLOW: PRIMARY GRAIN/TIMBER + PROD ≥ 1 → labour ×1.20
             IF WS-TECH-LEVEL(WS-IDX, 1) >= 1
-               AND (WS-PRIMARY-GOOD(WS-IDX) = "GRAIN          "
-                    OR WS-PRIMARY-GOOD(WS-IDX) = "TIMBER         ")
+               AND (WS-PRIMARY-GOOD(WS-REGION-ID(WS-IDX)) = "GRAIN          "
+                    OR WS-PRIMARY-GOOD(WS-REGION-ID(WS-IDX)) = "TIMBER         ")
                 COMPUTE WS-LABOUR-HOURS(WS-IDX) =
                     WS-LABOUR-HOURS(WS-IDX) * 12 / 10
                 MOVE WS-YEAR             TO WS-CHRON-YEAR
                 MOVE "INNOVATION     "   TO WS-CHRON-TYPE
-                MOVE WS-NAME(WS-IDX)     TO WS-CHRON-RGON
+                MOVE WS-POLITY-NAME(WS-IDX)     TO WS-CHRON-RGON
                 MOVE "Iron plow! Agriculture transformed."
                     TO WS-CHRON-DESC
                 PERFORM WRITE-CHRONICLE
@@ -3501,7 +3693,7 @@ PICK-INNOVATION.
                     UNTIL WS-NIDX > 3
                 MOVE WS-YEAR             TO WS-CHRON-YEAR
                 MOVE "INNOVATION     "   TO WS-CHRON-TYPE
-                MOVE WS-NAME(WS-IDX)     TO WS-CHRON-RGON
+                MOVE WS-POLITY-NAME(WS-IDX)     TO WS-CHRON-RGON
                 MOVE "Printing press! Ideas multiply."
                     TO WS-CHRON-DESC
                 PERFORM WRITE-CHRONICLE
@@ -3513,19 +3705,19 @@ PICK-INNOVATION.
                 ADD 200000 TO WS-CAPITAL-STOCK(WS-IDX)
                 MOVE WS-YEAR             TO WS-CHRON-YEAR
                 MOVE "INNOVATION     "   TO WS-CHRON-TYPE
-                MOVE WS-NAME(WS-IDX)     TO WS-CHRON-RGON
+                MOVE WS-POLITY-NAME(WS-IDX)     TO WS-CHRON-RGON
                 MOVE "Double-entry bookkeeping! Capital books accelerate."
                     TO WS-CHRON-DESC
                 PERFORM WRITE-CHRONICLE
             END-IF
         WHEN WS-RAND-INT < 800
 *>          COMPASS: COAST + ORG ≥ 1 → trade_balance +500
-            IF WS-TERRAIN(WS-IDX) = "COAST     "
+            IF WS-TERRAIN(WS-REGION-ID(WS-IDX)) = "COAST     "
                AND WS-TECH-LEVEL(WS-IDX, 2) >= 1
                 ADD 500 TO WS-TRADE-BALANCE(WS-IDX)
                 MOVE WS-YEAR             TO WS-CHRON-YEAR
                 MOVE "INNOVATION     "   TO WS-CHRON-TYPE
-                MOVE WS-NAME(WS-IDX)     TO WS-CHRON-RGON
+                MOVE WS-POLITY-NAME(WS-IDX)     TO WS-CHRON-RGON
                 MOVE "Compass! Maritime trade extends across horizons."
                     TO WS-CHRON-DESC
                 PERFORM WRITE-CHRONICLE
@@ -3541,7 +3733,7 @@ PICK-INNOVATION.
                 ADD CULTURE-WAR-WIN-DELTA TO WS-CULT-MIL(WS-IDX)
                 MOVE WS-YEAR             TO WS-CHRON-YEAR
                 MOVE "INNOVATION     "   TO WS-CHRON-TYPE
-                MOVE WS-NAME(WS-IDX)     TO WS-CHRON-RGON
+                MOVE WS-POLITY-NAME(WS-IDX)     TO WS-CHRON-RGON
                 MOVE "Gunpowder! Battlefields transformed."
                     TO WS-CHRON-DESC
                 PERFORM WRITE-CHRONICLE
@@ -3551,11 +3743,12 @@ PICK-INNOVATION.
 PRINTING-NB-SPREAD.
 *> Caller: WS-IDX, WS-NIDX. +5 consciousness соседу при печатном станке.
     EVALUATE WS-NIDX
-        WHEN 1 MOVE WS-NEIGHBOR-1(WS-IDX) TO WS-NBREG
-        WHEN 2 MOVE WS-NEIGHBOR-2(WS-IDX) TO WS-NBREG
-        WHEN 3 MOVE WS-NEIGHBOR-3(WS-IDX) TO WS-NBREG
+        WHEN 1 MOVE WS-NEIGHBOR-1(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 2 MOVE WS-NEIGHBOR-2(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
+        WHEN 3 MOVE WS-NEIGHBOR-3(WS-REGION-ID(WS-IDX)) TO WS-NB-REGION-ID
     END-EVALUATE
-    IF WS-NBREG > 0 AND WS-NBREG <= REGION-COUNT
+    PERFORM EVAL-NB-OCCUPANT
+    IF WS-NBREG > 0 AND WS-NBREG <= POLITY-COUNT
        AND NOT POLITY-DORMANT(WS-NBREG)
         ADD 2 TO WS-CONSCIOUSNESS(WS-NBREG)
         IF WS-CONSCIOUSNESS(WS-NBREG) > CONSCIOUSNESS-MAX
@@ -3683,7 +3876,7 @@ CLIMATE-EVENTS-ALL.
 *> Хаос в стиле Dwarf Fortress: историю двигают не только классы, но и засухи.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
         IF NOT POLITY-DORMANT(WS-IDX)
-            EVALUATE WS-TERRAIN(WS-IDX)
+            EVALUATE WS-TERRAIN(WS-REGION-ID(WS-IDX))
                 WHEN "SWAMP     "
                     MOVE SWAMP-EPIDEMIC-PERMIL TO WS-PROB-PERMIL
                     MOVE "CLIMATE-EPIDEM" TO WS-DEBUG-LABEL
@@ -3736,7 +3929,7 @@ EVT-EPIDEMIC.
     END-IF
     MOVE WS-YEAR           TO WS-CHRON-YEAR
     MOVE "EPIDEMIC       " TO WS-CHRON-TYPE
-    MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
     MOVE "Plague strikes the swamps. Workers die in droves." TO WS-CHRON-DESC
     PERFORM WRITE-CHRONICLE.
 
@@ -3748,7 +3941,7 @@ EVT-DROUGHT.
     MOVE WS-IDX TO WS-CLAMP-IDX  PERFORM CLAMP-TENSION
     MOVE WS-YEAR           TO WS-CHRON-YEAR
     MOVE "DROUGHT        " TO WS-CHRON-TYPE
-    MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
     MOVE "Drought ravages the desert. Wells run dry." TO WS-CHRON-DESC
     PERFORM WRITE-CHRONICLE.
 
@@ -3758,7 +3951,7 @@ EVT-CAVEIN.
         WS-CAPITAL-STOCK(WS-IDX) * CAVEIN-CAPITAL-PCT / 100
     MOVE WS-YEAR           TO WS-CHRON-YEAR
     MOVE "CAVE-IN        " TO WS-CHRON-TYPE
-    MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
     MOVE "Mountain mine collapses. Capital stock damaged." TO WS-CHRON-DESC
     PERFORM WRITE-CHRONICLE.
 
@@ -3785,7 +3978,7 @@ EVT-HARVEST.
         MOVE "Crops fail. Workers tighten their belts." TO WS-CHRON-DESC
     END-IF
     MOVE WS-YEAR           TO WS-CHRON-YEAR
-    MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
     PERFORM WRITE-CHRONICLE.
 
 EVT-STORM.
@@ -3794,7 +3987,7 @@ EVT-STORM.
         WS-LABOUR-HOURS(WS-IDX) * STORM-LABOUR-PCT / 100
     MOVE WS-YEAR           TO WS-CHRON-YEAR
     MOVE "STORM          " TO WS-CHRON-TYPE
-    MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
     MOVE "Coastal storm wrecks the docks." TO WS-CHRON-DESC
     PERFORM WRITE-CHRONICLE.
 
@@ -3804,7 +3997,7 @@ EVT-BLIGHT.
         WS-LABOUR-HOURS(WS-IDX) * 90 / 100
     MOVE WS-YEAR           TO WS-CHRON-YEAR
     MOVE "BLIGHT         " TO WS-CHRON-TYPE
-    MOVE WS-NAME(WS-IDX)   TO WS-CHRON-RGON
+    MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
     MOVE "Forest blight spreads through the timber stands." TO WS-CHRON-DESC
     PERFORM WRITE-CHRONICLE.
 

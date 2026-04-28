@@ -1,4 +1,94 @@
 
+## [Phase 24 / Этап 2B — расширение слотов до 30 + spawn наследников] 2026-04-28
+
+### Зачем
+
+Этап 2A научил политии вымирать (EXTINCT навсегда), но без механизма «откуда берутся новые государства» карта мира неуклонно пустела. Этап 2B даёт ответ: при распаде крупной империи на её земле возникает наследник — новое государство с другим именем, новым правителем, частью унаследованных ресурсов. Это исторично: на месте Рима — варварские королевства; на месте Византии — османы; на месте Российской империи — СССР.
+
+### Что сделано
+
+**A. Расширение слотов: 10 → 30 политий.** `WS-POLITIES OCCURS 30 TIMES`. Стартовых 10 живых; 11..30 — EXTINCT-резервы для будущего spawn'а. Регионов по-прежнему 10 — это **геофон**, постоянный.
+
+**B. Поле `WS-REGION-ID`** в политии (PIC 99): «на каком регионе живёт эта полития». Для активных = 1..10, для EXTINCT-резерва = 0. polities.dat layout: добавлено 2 байта после `POLITY-NAME` (теперь 164 байт/строка). Rust парсер обновлён (offsets сдвинулись на 2).
+
+**C. Mapping `WS-REGION-OCCUPANT(10)`**: «кто сейчас живёт в регионе X». Заполняется параграфом `BUILD-OCCUPANT-MAP` сразу после `READ-WORLD` каждый ход — реконструируется из region_id'ов политий.
+
+**D. Соседство через region_id.** Все neighbor-проверки переписаны на двухшаговый lookup:
+```
+1. WS-NEIGHBOR-X(WS-REGION-ID(WS-IDX)) → WS-NB-REGION-ID  (индекс соседнего региона)
+2. EVAL-NB-OCCUPANT → WS-NBREG  (индекс политии в этом регионе или 0)
+3. IF WS-NBREG > 0 AND NOT POLITY-DORMANT(WS-NBREG) THEN ...
+```
+Это даёт обратную совместимость на B.1 (когда polity_id == region_id) и работает корректно после spawn'а наследников в slots 11..30.
+
+**E. SPAWN-HEIR + третья ветка коллапса.** В `COLLAPSE-ONE` теперь три пути:
+
+| pop на момент коллапса | путь | что происходит |
+|---|---|---|
+| ≥ 70k (`LARGE-COLLAPSE-THRESHOLD`) | **FRAGMENT** | родитель → EXTINCT, наследник spawn'ится в свободном слоте, занимает тот же регион. Имя «Neo-<region>», новый правитель, 1/3 pop, 1/4 capital. |
+| 20-69k | COLLAPSED → REBIRTH (как в 2A) | тёмные века, через 8 ходов восстанет |
+| < 20k | EXTINCT (как в 2A) | окончательное вымирание |
+
+Параграф `FIND-EXTINCT-SLOT` ищет первый slot 11..30 с EXTINCT и region_id=0. Если все 30 заняты — fallback: «Empire fragments. No successor — slots exhausted.»
+
+**F. Подкрутка порогов:** EXTINCT 30k → 20k (только реально вымершие); FRAGMENT 70k (узкий диапазон у границы триггера). Это даёт **все три ветки активны** в стресс-тесте.
+
+**G. Имена наследников.** Берутся из имени **территории** (`WS-NAME(WS-REGION-ID)`), а не имени родительской политии. Иначе серия распадов копит рекурсивный префикс «Neo-Neo-Neo-X».
+
+**H. Глобальная замена `WS-NAME(WS-IDX)` → `WS-POLITY-NAME(WS-IDX)`** для всех CHRONICLE-RGON и war-message stringings. WS-NAME OCCURS 10 — для slot > 10 это out-of-bounds, что вызывало `libcob status=71`. WS-POLITY-NAME OCCURS 30 — корректно. Аналогично `WS-TERRAIN/CLIMATE/PRIMARY-GOOD(WS-IDX)` заменены на `(WS-REGION-ID(WS-IDX))` в полит-loop'ах.
+
+**I. UI переписан через `occupant_of`.** Главная таблица: `regions.iter().enumerate().map(|(i, r)| world.occupant_of(i))` — для каждого региона показываем текущего хозяина. Если регион пуст (vacant) — серая «✗ vacant» строка. Detail panel: `occupant_of(selected)` вместо `polities[selected]`.
+
+**J. WorldHistory индексируется per-region** через occupant. Callback теперь принимает `(idx, &R)` — позволяет искать `world.occupant_of(idx)`. При смене политии в регионе (FRAGMENT/EXTINCT/spawn) trends начинаются заново — это корректно, мы трекаем «текущую политию региона», не slot.
+
+### Стресс-тест 1500 ходов
+
+```
+FRAGMENT:   21    ← новое: империи распадаются на наследников
+EXTINCT:     6
+COLLAPSE:   51
+REBIRTH:    50    ← все три ветки коллапса работают
+REVOLUTION:  9
+MODE-SHIFT: 14
+```
+
+End-state на год 1500 (4 живых полит из 10 регионов):
+- **Ironmarch** (slot 1) — FEUDAL 776k pop (стартовая, не распадалась за 1500 лет)
+- **Goldgate** (slot 5) — IMPERIAL 59M pop (стартовая, выросла в супер-империю)
+- **Neo-Embervast** (slot 4) — FEUDAL 97k pop (наследник, регион Embervast)
+- **Neo-Cinderkeep** (slot 2) — COLLAPSED 10k pop (наследник, в тёмных веках)
+
+Vacant regions: Ashvale, Stonehold, Frostfen, Duskveil, Thornwall, Saltmere — 6/10 опустели. Этап 2C (3 ячейки на регион + spawn в соседних свободных) ответит на этот.
+
+Также видно эффект каскадных распадов: «Neo-Neo-» имена больше не накапливаются (после фикса) — каждый наследник называется заново «Neo-<имя территории>».
+
+### Какие файлы затронуты
+
+- `cobol/simulate.cob` — POLITY-COUNT=30, WS-REGION-ID в WS-POLITIES, WS-REGION-OCCUPANT таблица, BUILD-OCCUPANT-MAP, EVAL-NB-OCCUPANT helper, переписаны все neighbor-проверки на 2-шаговый lookup, FIND-EXTINCT-SLOT + SPAWN-HEIR параграфы, третья ветка в COLLAPSE-ONE; глобальные замены WS-NAME→WS-POLITY-NAME (chronicle/war), WS-TERRAIN/CLIMATE/PRIMARY-GOOD через WS-REGION-ID
+- `cobol/world.cob` — WS-POLITIES OCCURS 30, WS-REGION-ID, INIT-EXTINCT-SLOT для slots 11..30
+- `src/world.rs` — Polity.region_id, обновлены layout offsets, новый метод `World::occupant_of(region_idx)`
+- `src/saves.rs` — миграция legacy world.dat теперь генерирует 30 строк polities.dat (10 живых из legacy + 20 EXTINCT-резервов) с region_id
+- `src/ui.rs` — таблица регионов через `occupant_of`, vacant-row для пустых, detail panel через occupant
+- `src/history.rs` — record_if_new_year принимает callback с (idx, &R)
+
+### Регрессия
+
+`scripts/baseline.sh check` зелёный (новый baseline снят после Этапа 2B). Поведение детерминированно при фиксированной последовательности RANDOM-вызовов. Unit-тест миграции legacy slot — зелёный.
+
+### Что не делалось (Этап 2C+)
+
+- 3 ячейки на регион (полная мозаика — несколько политий на одной территории)
+- Spawn наследников в **соседних** регионах (сейчас только в том же)
+- STATELESS как mode + spawn из беженцев в пустых ячейках
+- Аннексия ячейки в WAR-VICTORY
+- Балансировка демографических порогов так чтобы все три ветки коллапса срабатывали одинаково часто (сейчас FRAGMENT редкий)
+
+### Замечания / возможные тюны
+
+- 21 FRAGMENT за 1500 ходов = ~1 распад на 70 лет — редкое драматичное событие. Если хочется чаще — повысить LARGE-COLLAPSE-THRESHOLD до 60k (расширить FRAGMENT-полосу).
+- К году 1500 6/10 регионов vacant. Это known: spawn только при распаде, нет «прихода» политий извне региона. Этап 2C решит.
+- Если все 30 слотов заняты (теоретически) — FRAGMENT не может spawn'ить, fallback на pure EXTINCT. В стресс-тесте этого не наблюдалось — typically 4-10 политий живых одновременно, ≥20 слотов всегда свободны.
+
 ## [Phase 24 / Этап 2A — EXTINCT для малых политий] 2026-04-28
 
 ### Зачем
