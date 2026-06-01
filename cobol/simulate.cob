@@ -232,6 +232,8 @@ WORKING-STORAGE SECTION.
 78 CAPITAL-ACC-DIVISOR      VALUE 10.
 *> Phase 25 — обесценивание капитала при нереализации
 78 CRISIS-WRITEDOWN-DIVISOR  VALUE 5.
+78 REALIZE-MAX-PERMIL        VALUE 3000.  *> кэп реализации (страховка)
+78 BANKRUPTCY-CHRON-MIN      VALUE 1000.  *> мин. убыток для записи BANKRUPTCY
 
 *> Распределение
 78 SUBSIST-PER-WORKER       VALUE 4.
@@ -1051,6 +1053,22 @@ REALIZE-ALL.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
         IF NOT POLITY-DORMANT(WS-IDX)
             MOVE 1000 TO WS-REALIZE-PERMIL
+            MOVE 0 TO WS-FOUND
+            PERFORM VARYING WS-MIDX FROM 1 BY 1
+                    UNTIL WS-MIDX > MARKET-COUNT OR WS-FOUND = 1
+                IF FUNCTION TRIM(WS-MKT-NAME(WS-MIDX)) =
+                   FUNCTION TRIM(WS-PRIMARY-GOOD(WS-REGION-ID(WS-IDX)))
+                    IF WS-MKT-DFLT(WS-MIDX) > 0
+                        COMPUTE WS-REALIZE-PERMIL =
+                            WS-MKT-PRICE(WS-MIDX) * 1000
+                            / WS-MKT-DFLT(WS-MIDX)
+                    END-IF
+                    MOVE 1 TO WS-FOUND
+                END-IF
+            END-PERFORM
+            IF WS-REALIZE-PERMIL > REALIZE-MAX-PERMIL
+                MOVE REALIZE-MAX-PERMIL TO WS-REALIZE-PERMIL
+            END-IF
             COMPUTE WS-REALIZED-OUTPUT =
                 WS-OUTPUT-VALUE(WS-IDX) * WS-REALIZE-PERMIL / 1000
             COMPUTE WS-SURPLUS-VAL =
@@ -1072,6 +1090,14 @@ REALIZE-ALL.
                     MOVE 0 TO WS-CAPITAL-STOCK(WS-IDX)
                 END-IF
                 MOVE WS-REALIZED-OUTPUT TO WS-WAGE-FUND(WS-IDX)
+                IF WS-LOSS >= BANKRUPTCY-CHRON-MIN
+                    MOVE WS-YEAR TO WS-CHRON-YEAR
+                    MOVE "BANKRUPTCY     " TO WS-CHRON-TYPE
+                    MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
+                    MOVE "Capital destroyed as prices fall below cost."
+                        TO WS-CHRON-DESC
+                    PERFORM WRITE-CHRONICLE
+                END-IF
             END-IF
         END-IF
     END-PERFORM.
