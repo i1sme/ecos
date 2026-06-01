@@ -234,6 +234,8 @@ WORKING-STORAGE SECTION.
 78 CRISIS-WRITEDOWN-DIVISOR  VALUE 5.
 78 REALIZE-MAX-PERMIL        VALUE 3000.  *> кэп реализации (страховка)
 78 BANKRUPTCY-CHRON-MIN      VALUE 1000.  *> мин. убыток для записи BANKRUPTCY
+78 UNEMPLOYMENT-SCALE        VALUE 20.   *> (1000−realize)/20 = target % безработицы
+78 UNEMPLOYMENT-SMOOTHING    VALUE 3.    *> инерция резервной армии
 
 *> Распределение
 78 SUBSIST-PER-WORKER       VALUE 4.
@@ -436,6 +438,8 @@ WORKING-STORAGE SECTION.
 01 WS-REALIZED-PROFIT   PIC S9(12)V99.
 01 WS-WAGE-COST         PIC S9(12)V99.
 01 WS-LOSS              PIC S9(12)V99.
+01 WS-UNEMP-TARGET      PIC S9(4).
+01 WS-EFFECTIVE-LABOUR  PIC 9(10).
 01 WS-NB-EXPORT       PIC S9(12)V99.
 
 01 WS-OUT-LINE        PIC X(204).
@@ -911,30 +915,33 @@ PRODUCE-ALL.
 *> Phase 11 — 7 эпох: PRIMITIVE/SLAVE/FEUDAL/MERCANTILE/PROTO-IND/INDUSTRIAL/IMPERIAL.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
         IF NOT POLITY-DORMANT(WS-IDX)
+            COMPUTE WS-EFFECTIVE-LABOUR =
+                WS-LABOUR-HOURS(WS-IDX)
+                * (100 - WS-UNEMPLOYMENT-PCT(WS-IDX)) / 100
             EVALUATE WS-PROD-MODE(WS-IDX)
                 WHEN WS-MODE-PRIMITIVE
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-PRIMITIVE-X1000 / 1000
                 WHEN WS-MODE-SLAVE
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-SLAVE-X1000 / 1000
                 WHEN WS-MODE-MERCANTILE
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-MERCANTILE-X1000 / 1000
                 WHEN WS-MODE-PROTO-IND
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-PROTO-IND-X1000 / 1000
                 WHEN WS-MODE-INDUSTRIAL
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-INDUSTRIAL-X1000 / 1000
                 WHEN WS-MODE-IMPERIAL
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-IMPERIAL-X1000 / 1000
                 WHEN WS-MODE-SOCIALIST
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-SOCIALIST-X1000 / 1000
                 WHEN OTHER
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-FEUDAL-X1000 / 1000
             END-EVALUATE
 *>          Phase 13: Bronze (L1) ×1.05. Phase 17: L3 alternatives расходятся.
@@ -1098,6 +1105,22 @@ REALIZE-ALL.
                         TO WS-CHRON-DESC
                     PERFORM WRITE-CHRONICLE
                 END-IF
+            END-IF
+*>          Phase 25 — резервная армия труда. Перепроизводство (realize<1000)
+*>          толкает безработицу вверх; подъём (realize≥1000) рассасывает её.
+*>          Движение с инерцией — резервная армия не появляется мгновенно.
+            IF WS-REALIZE-PERMIL < 1000
+                COMPUTE WS-UNEMP-TARGET =
+                    (1000 - WS-REALIZE-PERMIL) / UNEMPLOYMENT-SCALE
+            ELSE
+                MOVE 0 TO WS-UNEMP-TARGET
+            END-IF
+            COMPUTE WS-UNEMPLOYMENT-PCT(WS-IDX) =
+                WS-UNEMPLOYMENT-PCT(WS-IDX)
+                + (WS-UNEMP-TARGET - WS-UNEMPLOYMENT-PCT(WS-IDX))
+                  / UNEMPLOYMENT-SMOOTHING
+            IF WS-UNEMPLOYMENT-PCT(WS-IDX) > 100
+                MOVE 100 TO WS-UNEMPLOYMENT-PCT(WS-IDX)
             END-IF
         END-IF
     END-PERFORM.
