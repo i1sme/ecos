@@ -72,6 +72,7 @@ impl ChronicleFilter {
                 e.event_type.as_str(),
                 "REVOLUTION" | "COLLAPSE" | "REBIRTH" | "CLASS-WAR"
                 | "RULER-DEATH" | "RULER-RISE" | "TECH-LOOT"
+                | "CRISIS" | "BANKRUPTCY"
             ),
             ChronicleFilter::Climate => matches!(
                 e.event_type.as_str(),
@@ -776,6 +777,47 @@ pub fn run() -> io::Result<()> {
                     Line::from(format!("Surplus: {:.2}%", p.surplus_rate)),
                     Line::from(format!("Capital: {:.0}", p.capital_stock)),
                     Line::from(format!("Military:{:>6}", p.military_strength)),
+                    // Phase 25: безработица (резервная армия труда).
+                    Line::from(vec![
+                        Span::raw("Unemploy:  "),
+                        Span::styled(
+                            format!("{}%", p.unemployment_pct),
+                            Style::default().fg(if p.unemployment_pct >= 25 {
+                                Color::Red
+                            } else if p.unemployment_pct >= 10 {
+                                Color::Yellow
+                            } else {
+                                Color::DarkGray
+                            }),
+                        ),
+                    ]),
+                    // Phase 25: реализация — соотношение предложения к спросу
+                    // для основного товара региона. >1.2 = перепроизводство (красный),
+                    // <0.8 = дефицит (голубой), иначе — равновесие (серый).
+                    {
+                        let good_name = r.primary_good.trim();
+                        let commodity = market.iter().find(|c| c.name.trim() == good_name);
+                        match commodity {
+                            Some(c) if c.demand > 0.0 => {
+                                let ratio = c.supply / c.demand;
+                                let (label, col) = if c.crisis || ratio > 1.2 {
+                                    (format!("{:.0}% ▼ glut", ratio * 100.0), Color::Red)
+                                } else if ratio < 0.8 {
+                                    (format!("{:.0}% ▲ scarce", ratio * 100.0), Color::LightCyan)
+                                } else {
+                                    (format!("{:.0}% ~", ratio * 100.0), Color::DarkGray)
+                                };
+                                Line::from(vec![
+                                    Span::raw("Realizatn: "),
+                                    Span::styled(label, Style::default().fg(col)),
+                                ])
+                            }
+                            _ => Line::from(Span::styled(
+                                "Realizatn: —",
+                                Style::default().fg(Color::DarkGray),
+                            )),
+                        }
+                    },
                     Line::from(""),
                     war_line,
                 ];
@@ -922,6 +964,8 @@ pub fn run() -> io::Result<()> {
                         "FAMINE"      => Color::LightRed,
                         "MODE-SHIFT"  => Color::Cyan,
                         "CRISIS"      => Color::LightYellow,
+                        // Phase 25 — экономическое банкротство
+                        "BANKRUPTCY"  => Color::LightRed,
                         // Phase 8 climate hazards
                         "EPIDEMIC"    => Color::LightMagenta,
                         "DROUGHT"     => Color::LightYellow,
