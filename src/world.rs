@@ -53,6 +53,7 @@
 // | culture_merc   | 154   |   3   |
 // | culture_rel    | 157   |   3   |
 // | mode_years     | 160   |   4   |
+// | unemployment_pct | 164 |   3   |
 
 #[derive(Debug, Clone)]
 pub struct Region {
@@ -95,6 +96,8 @@ pub struct Polity {
     pub culture_merc: u8,
     pub culture_rel: u8,
     pub mode_years: u16,
+    /// Phase 25 — доля безработных (резервная армия труда), 0..100.
+    pub unemployment_pct: u8,
 }
 
 /// Связка геофона и политического слоя.
@@ -168,35 +171,44 @@ pub fn parse_polities(path: &str) -> Vec<Polity> {
     content
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|line| Polity {
-            name:              slice_or_blank(line, 0,   20).to_string(),
-            region_id:         parse_u64(slice_or_blank(line, 20, 2)) as u8,
-            population:        parse_u64(slice_or_blank(line, 22, 8)) as u32,
-            peasants_pct:      parse_u64(slice_or_blank(line, 30, 3)) as u8,
-            artisans_pct:      parse_u64(slice_or_blank(line, 33, 3)) as u8,
-            merchants_pct:     parse_u64(slice_or_blank(line, 36, 3)) as u8,
-            nobility_pct:      parse_u64(slice_or_blank(line, 39, 3)) as u8,
-            clergy_pct:        parse_u64(slice_or_blank(line, 42, 3)) as u8,
-            prod_mode:         slice_or_blank(line, 45, 15).to_string(),
-            labour_hours:      parse_u64(slice_or_blank(line, 60, 10)),
-            surplus_rate:      parse_dec(slice_or_blank(line, 70, 5)),
-            capital_stock:     parse_dec(slice_or_blank(line, 75, 12)),
-            class_tension:     parse_u64(slice_or_blank(line, 87, 3)) as u8,
-            military_strength: parse_u64(slice_or_blank(line, 90, 5)) as u32,
-            at_war_with:       parse_u64(slice_or_blank(line, 95, 2)) as u8,
-            // collapse_timer @ 97..100 в polities.dat — используется только
-            // COBOL'ом для отсчёта REBIRTH-DURATION; UI не отображает.
-            war_year:          parse_u64(slice_or_blank(line, 100, 3)) as u16,
-            war_type:          slice_or_blank(line, 103, 10).to_string(),
-            ruler_name:        slice_or_blank(line, 113, 20).to_string(),
-            ruler_age:         parse_u64(slice_or_blank(line, 133, 2)) as u8,
-            ruler_trait:       slice_or_blank(line, 135, 10).to_string(),
-            ruler_reign:       parse_u64(slice_or_blank(line, 145, 3)) as u16,
-            consciousness:     parse_u64(slice_or_blank(line, 148, 3)) as u8,
-            culture_mil:       parse_u64(slice_or_blank(line, 151, 3)) as u8,
-            culture_merc:      parse_u64(slice_or_blank(line, 154, 3)) as u8,
-            culture_rel:       parse_u64(slice_or_blank(line, 157, 3)) as u8,
-            mode_years:        parse_u64(slice_or_blank(line, 160, 4)) as u16,
+        .map(|line| {
+            if line.len() < 167 {
+                eprintln!(
+                    "WARN: polities.dat line {} bytes, expected 167 — формат рассинхронизирован?",
+                    line.len()
+                );
+            }
+            Polity {
+                name:              slice_or_blank(line, 0,   20).to_string(),
+                region_id:         parse_u64(slice_or_blank(line, 20, 2)) as u8,
+                population:        parse_u64(slice_or_blank(line, 22, 8)) as u32,
+                peasants_pct:      parse_u64(slice_or_blank(line, 30, 3)) as u8,
+                artisans_pct:      parse_u64(slice_or_blank(line, 33, 3)) as u8,
+                merchants_pct:     parse_u64(slice_or_blank(line, 36, 3)) as u8,
+                nobility_pct:      parse_u64(slice_or_blank(line, 39, 3)) as u8,
+                clergy_pct:        parse_u64(slice_or_blank(line, 42, 3)) as u8,
+                prod_mode:         slice_or_blank(line, 45, 15).to_string(),
+                labour_hours:      parse_u64(slice_or_blank(line, 60, 10)),
+                surplus_rate:      parse_dec(slice_or_blank(line, 70, 5)),
+                capital_stock:     parse_dec(slice_or_blank(line, 75, 12)),
+                class_tension:     parse_u64(slice_or_blank(line, 87, 3)) as u8,
+                military_strength: parse_u64(slice_or_blank(line, 90, 5)) as u32,
+                at_war_with:       parse_u64(slice_or_blank(line, 95, 2)) as u8,
+                // collapse_timer @ 97..100 в polities.dat — используется только
+                // COBOL'ом для отсчёта REBIRTH-DURATION; UI не отображает.
+                war_year:          parse_u64(slice_or_blank(line, 100, 3)) as u16,
+                war_type:          slice_or_blank(line, 103, 10).to_string(),
+                ruler_name:        slice_or_blank(line, 113, 20).to_string(),
+                ruler_age:         parse_u64(slice_or_blank(line, 133, 2)) as u8,
+                ruler_trait:       slice_or_blank(line, 135, 10).to_string(),
+                ruler_reign:       parse_u64(slice_or_blank(line, 145, 3)) as u16,
+                consciousness:     parse_u64(slice_or_blank(line, 148, 3)) as u8,
+                culture_mil:       parse_u64(slice_or_blank(line, 151, 3)) as u8,
+                culture_merc:      parse_u64(slice_or_blank(line, 154, 3)) as u8,
+                culture_rel:       parse_u64(slice_or_blank(line, 157, 3)) as u8,
+                mode_years:        parse_u64(slice_or_blank(line, 160, 4)) as u16,
+                unemployment_pct:  parse_u64(slice_or_blank(line, 164, 3)) as u8,
+            }
         })
         .collect()
 }

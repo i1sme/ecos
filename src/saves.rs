@@ -135,7 +135,7 @@ fn migrate_legacy_slot(slot_dir: &Path) -> io::Result<()> {
         // На Этапе 2B: legacy полития жила 1:1 с регионом → region_id = active_count
         let region_id_field = format!("{:02}", active_count);
         polities_out.push_str(&format!(
-            "{:20}{}{:8}{:15}{:15}{:10}{:5}{:12}{:3}{:5}{:2}{:3}{:3}{:10}{:20}{:2}{:10}{:3}{:3}{:9}{:4}\n",
+            "{:20}{}{:8}{:15}{:15}{:10}{:5}{:12}{:3}{:5}{:2}{:3}{:3}{:10}{:20}{:2}{:10}{:3}{:3}{:9}{:4}{:3}\n",
             take(0, 20),
             region_id_field,
             take(40, 8),
@@ -157,6 +157,7 @@ fn migrate_legacy_slot(slot_dir: &Path) -> io::Result<()> {
             take(187, 3),
             take(190, 9), // 3×3 культур
             mode_years_field,
+            "000",
         ));
     }
     // Phase 24 / Этап 2B: добавляем EXTINCT-резервы до total = 30 политий.
@@ -164,7 +165,7 @@ fn migrate_legacy_slot(slot_dir: &Path) -> io::Result<()> {
     while active_count < 30 {
         active_count += 1;
         polities_out.push_str(&format!(
-            "{:20}{:2}{:8}{:15}{:15}{:10}{:5}{:12}{:3}{:5}{:2}{:3}{:3}{:10}{:20}{:2}{:10}{:3}{:3}{:9}{:4}\n",
+            "{:20}{:2}{:8}{:15}{:15}{:10}{:5}{:12}{:3}{:5}{:2}{:3}{:3}{:10}{:20}{:2}{:10}{:3}{:3}{:9}{:4}{:3}\n",
             "",                  // name (пустое)
             "00",                // region_id = 0 (не размещена)
             "00000000",          // population
@@ -186,6 +187,7 @@ fn migrate_legacy_slot(slot_dir: &Path) -> io::Result<()> {
             "000",               // consciousness
             "000000000",         // culture
             "0000",              // mode_years
+            "000",               // unemployment_pct
         ));
     }
     fs::write(&regions_path, regions_out)?;
@@ -307,6 +309,9 @@ mod tests {
         assert!(polities.contains("SLAVE"),    "polities.dat must include prod_mode");
         assert!(polities.contains("Gareth"),   "polities.dat must include ruler");
         assert!(polities.contains("PIOUS"),    "polities.dat must include trait");
+        for l in polities.lines().filter(|l| !l.is_empty()) {
+            assert_eq!(l.len(), 167, "polities.dat line must be 167 bytes after Phase 25");
+        }
         // legacy переименован
         assert!(!tmp.join("world.dat").exists(),
                 "legacy world.dat should have been renamed");

@@ -230,6 +230,14 @@ WORKING-STORAGE SECTION.
 78 CLERGY-PACIFY-DIVISOR    VALUE 3.
 78 MERCHANT-PACIFY-DIVISOR  VALUE 5.
 78 CAPITAL-ACC-DIVISOR      VALUE 10.
+*> Phase 25 — обесценивание капитала при нереализации
+78 CRISIS-WRITEDOWN-DIVISOR  VALUE 5.
+78 REALIZE-MAX-PERMIL        VALUE 3000.  *> кэп реализации (страховка)
+78 BANKRUPTCY-CHRON-MIN      VALUE 1000.  *> мин. убыток для записи BANKRUPTCY
+78 UNEMPLOYMENT-SCALE        VALUE 20.   *> (1000−realize)/20 = target % безработицы
+78 UNEMPLOYMENT-SMOOTHING    VALUE 3.    *> инерция резервной армии
+78 UNEMPLOYMENT-TENSION-WT   VALUE 5.    *> делитель вклада безработицы в tension
+78 UNEMPLOYMENT-CONSC-MIN    VALUE 15.   *> порог безработицы для +1 сознание
 
 *> Распределение
 78 SUBSIST-PER-WORKER       VALUE 4.
@@ -426,6 +434,14 @@ WORKING-STORAGE SECTION.
 *> Signed temps для арифметики
 01 WS-OUTPUT-VAL      PIC S9(12)V99.
 01 WS-SURPLUS-VAL     PIC S9(12)V99.
+*> Phase 25 — реализация стоимости
+01 WS-REALIZE-PERMIL    PIC S9(5).
+01 WS-REALIZED-OUTPUT   PIC S9(12)V99.
+01 WS-REALIZED-PROFIT   PIC S9(12)V99.
+01 WS-WAGE-COST         PIC S9(12)V99.
+01 WS-LOSS              PIC S9(12)V99.
+01 WS-UNEMP-TARGET      PIC S9(4).
+01 WS-EFFECTIVE-LABOUR  PIC 9(10).
 01 WS-NB-EXPORT       PIC S9(12)V99.
 
 01 WS-OUT-LINE        PIC X(204).
@@ -521,6 +537,8 @@ WORKING-STORAGE SECTION.
 *> Сбрасывается на 0 при каждом mode-shift, COLLAPSE, REBIRTH.
 *> Используется как минимальная «выдержка» эпохи перед возможностью перехода.
    05 WS-MODE-YEARS        PIC 9(4).
+*> Phase 25 — резервная армия труда (доля безработных, 0..100).
+   05 WS-UNEMPLOYMENT-PCT  PIC 9(3).
 
 *> Пул имён правителей и трейтов (общий с world.cob)
 01 WS-NAME-POOL.
@@ -650,6 +668,7 @@ MAIN-PARA.
     PERFORM CHECK-CRISIS
     PERFORM PROPAGATE-CRISIS
     PERFORM WRITE-MARKET
+    PERFORM REALIZE-ALL
     PERFORM TRADE-ALL
     PERFORM WAR-CHECK-ALL
     PERFORM WAR-RESOLVE-ALL
@@ -855,7 +874,8 @@ PARSE-POLITY-RECORD.
 *>    CULT-MIL       @ 152 len 3
 *>    CULT-MERC      @ 155 len 3
 *>    CULT-REL       @ 158 len 3
-*>    MODE-YEARS     @ 161 len 4   = 164 байт (запись)
+*>    MODE-YEARS     @ 161 len 4
+*>    UNEMPLOYMENT    @ 165 len 3   = 167 байт (запись)
     MOVE WS-POLITY-REC(1:20)                   TO WS-POLITY-NAME(WS-IDX)
     MOVE FUNCTION NUMVAL(WS-POLITY-REC(21:2))  TO WS-REGION-ID(WS-IDX)
     MOVE FUNCTION NUMVAL(WS-POLITY-REC(23:8))  TO WS-POPULATION(WS-IDX)
@@ -884,7 +904,8 @@ PARSE-POLITY-RECORD.
     MOVE FUNCTION NUMVAL(WS-POLITY-REC(152:3)) TO WS-CULT-MIL(WS-IDX)
     MOVE FUNCTION NUMVAL(WS-POLITY-REC(155:3)) TO WS-CULT-MERC(WS-IDX)
     MOVE FUNCTION NUMVAL(WS-POLITY-REC(158:3)) TO WS-CULT-REL(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(161:4)) TO WS-MODE-YEARS(WS-IDX).
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(161:4)) TO WS-MODE-YEARS(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(165:3)) TO WS-UNEMPLOYMENT-PCT(WS-IDX).
 
     MOVE 0         TO WS-OUTPUT-VALUE(WS-IDX)
     MOVE 0         TO WS-WAGE-FUND(WS-IDX)
@@ -896,30 +917,33 @@ PRODUCE-ALL.
 *> Phase 11 — 7 эпох: PRIMITIVE/SLAVE/FEUDAL/MERCANTILE/PROTO-IND/INDUSTRIAL/IMPERIAL.
     PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
         IF NOT POLITY-DORMANT(WS-IDX)
+            COMPUTE WS-EFFECTIVE-LABOUR =
+                WS-LABOUR-HOURS(WS-IDX)
+                * (100 - WS-UNEMPLOYMENT-PCT(WS-IDX)) / 100
             EVALUATE WS-PROD-MODE(WS-IDX)
                 WHEN WS-MODE-PRIMITIVE
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-PRIMITIVE-X1000 / 1000
                 WHEN WS-MODE-SLAVE
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-SLAVE-X1000 / 1000
                 WHEN WS-MODE-MERCANTILE
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-MERCANTILE-X1000 / 1000
                 WHEN WS-MODE-PROTO-IND
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-PROTO-IND-X1000 / 1000
                 WHEN WS-MODE-INDUSTRIAL
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-INDUSTRIAL-X1000 / 1000
                 WHEN WS-MODE-IMPERIAL
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-IMPERIAL-X1000 / 1000
                 WHEN WS-MODE-SOCIALIST
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-SOCIALIST-X1000 / 1000
                 WHEN OTHER
-                    COMPUTE WS-OUTPUT-VAL = WS-LABOUR-HOURS(WS-IDX)
+                    COMPUTE WS-OUTPUT-VAL = WS-EFFECTIVE-LABOUR
                                           * EFF-FEUDAL-X1000 / 1000
             END-EVALUATE
 *>          Phase 13: Bronze (L1) ×1.05. Phase 17: L3 alternatives расходятся.
@@ -955,49 +979,6 @@ PRODUCE-ALL.
                 END-EVALUATE
             END-IF
             MOVE WS-OUTPUT-VAL TO WS-OUTPUT-VALUE(WS-IDX)
-*>          Прибавочная стоимость: изъятие правящим классом
-            COMPUTE WS-SURPLUS-VAL = WS-OUTPUT-VAL
-                                   * WS-SURPLUS-RATE(WS-IDX) / 100
-*>          1/CAPITAL-ACC-DIVISOR прибавочной стоимости → накопление капитала
-            COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
-                + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR
-*>          Phase 13: Banking (ORG L2) ×1.3.
-*>          Phase 17: ORG L3 расходится — Joint-Stock дальше ускоряет accum,
-*>          Cooperatives стабилизирует tension, Cartels работает через trade.
-            IF WS-TECH-LEVEL(WS-IDX, 2) >= 2
-                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
-                    + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR * 30 / 100
-            END-IF
-            IF WS-TECH-LEVEL(WS-IDX, 2) >= 3
-                EVALUATE WS-TECH-L3-CHOICE(WS-IDX, 2)
-                    WHEN 1
-                        COMPUTE WS-CAPITAL-STOCK(WS-IDX) =
-                            WS-CAPITAL-STOCK(WS-IDX)
-                            + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR * 20 / 100
-                    WHEN 2
-                        CONTINUE
-                    WHEN 3
-                        COMPUTE WS-CAPITAL-STOCK(WS-IDX) =
-                            WS-CAPITAL-STOCK(WS-IDX)
-                            + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR * 10 / 100
-                END-EVALUATE
-            END-IF
-*>          Phase 18 ORG L4: StockMkt/LimLiab/Trusts/VertInt — каждый +10% к accum.
-*>          MutAid/WorkOwn → эффект на tension в SOCIAL-ALL.
-            IF WS-TECH-LEVEL(WS-IDX, 2) >= 4
-                EVALUATE TRUE
-                    WHEN WS-TECH-L3-CHOICE(WS-IDX, 2) = 1
-                        COMPUTE WS-CAPITAL-STOCK(WS-IDX) =
-                            WS-CAPITAL-STOCK(WS-IDX)
-                            + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR * 10 / 100
-                    WHEN WS-TECH-L3-CHOICE(WS-IDX, 2) = 3
-                        COMPUTE WS-CAPITAL-STOCK(WS-IDX) =
-                            WS-CAPITAL-STOCK(WS-IDX)
-                            + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR * 10 / 100
-                END-EVALUATE
-            END-IF
-*>          Зарплатный фонд = output − surplus (воспроизводство рабочей силы)
-            COMPUTE WS-WAGE-FUND(WS-IDX) = WS-OUTPUT-VAL - WS-SURPLUS-VAL
         ELSE
             MOVE 0 TO WS-OUTPUT-VALUE(WS-IDX)
             MOVE 0 TO WS-WAGE-FUND(WS-IDX)
@@ -1072,6 +1053,109 @@ CLAMP-PRICE.
     END-IF
     IF WS-MKT-PRICE(WS-MIDX) > WS-MKT-DFLT(WS-MIDX) * 3
         COMPUTE WS-MKT-PRICE(WS-MIDX) = WS-MKT-DFLT(WS-MIDX) * 3
+    END-IF.
+
+REALIZE-ALL.
+*> Phase 25 — реализация стоимости. На под-шаге рефакторинга realize=1000
+*> (полная реализация) → поведение идентично прежнему PRODUCE-ALL.
+*> Реальная цена подключается в следующей задаче.
+    PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
+        IF NOT POLITY-DORMANT(WS-IDX)
+            MOVE 1000 TO WS-REALIZE-PERMIL
+            MOVE 0 TO WS-FOUND
+            PERFORM VARYING WS-MIDX FROM 1 BY 1
+                    UNTIL WS-MIDX > MARKET-COUNT OR WS-FOUND = 1
+                IF FUNCTION TRIM(WS-MKT-NAME(WS-MIDX)) =
+                   FUNCTION TRIM(WS-PRIMARY-GOOD(WS-REGION-ID(WS-IDX)))
+                    IF WS-MKT-DFLT(WS-MIDX) > 0
+                        COMPUTE WS-REALIZE-PERMIL =
+                            WS-MKT-PRICE(WS-MIDX) * 1000
+                            / WS-MKT-DFLT(WS-MIDX)
+                    END-IF
+                    MOVE 1 TO WS-FOUND
+                END-IF
+            END-PERFORM
+            IF WS-REALIZE-PERMIL > REALIZE-MAX-PERMIL
+                MOVE REALIZE-MAX-PERMIL TO WS-REALIZE-PERMIL
+            END-IF
+            COMPUTE WS-REALIZED-OUTPUT =
+                WS-OUTPUT-VALUE(WS-IDX) * WS-REALIZE-PERMIL / 1000
+            COMPUTE WS-SURPLUS-VAL =
+                WS-OUTPUT-VALUE(WS-IDX) * WS-SURPLUS-RATE(WS-IDX) / 100
+            COMPUTE WS-WAGE-COST =
+                WS-OUTPUT-VALUE(WS-IDX) - WS-SURPLUS-VAL
+            COMPUTE WS-REALIZED-PROFIT =
+                WS-REALIZED-OUTPUT - WS-WAGE-COST
+            IF WS-REALIZED-PROFIT >= 0
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR
+                PERFORM ACCUMULATE-TECH-BONUS
+                MOVE WS-WAGE-COST TO WS-WAGE-FUND(WS-IDX)
+            ELSE
+                COMPUTE WS-LOSS = WS-WAGE-COST - WS-REALIZED-OUTPUT
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    - WS-LOSS / CRISIS-WRITEDOWN-DIVISOR
+                IF WS-CAPITAL-STOCK(WS-IDX) < 0
+                    MOVE 0 TO WS-CAPITAL-STOCK(WS-IDX)
+                END-IF
+                MOVE WS-REALIZED-OUTPUT TO WS-WAGE-FUND(WS-IDX)
+                IF WS-LOSS >= BANKRUPTCY-CHRON-MIN
+                    MOVE WS-YEAR TO WS-CHRON-YEAR
+                    MOVE "BANKRUPTCY     " TO WS-CHRON-TYPE
+                    MOVE WS-POLITY-NAME(WS-IDX) TO WS-CHRON-RGON
+                    MOVE "Capital destroyed as prices fall below cost."
+                        TO WS-CHRON-DESC
+                    PERFORM WRITE-CHRONICLE
+                END-IF
+            END-IF
+*>          Phase 25 — резервная армия труда. Перепроизводство (realize<1000)
+*>          толкает безработицу вверх; подъём (realize≥1000) рассасывает её.
+*>          Движение с инерцией — резервная армия не появляется мгновенно.
+            IF WS-REALIZE-PERMIL < 1000
+                COMPUTE WS-UNEMP-TARGET =
+                    (1000 - WS-REALIZE-PERMIL) / UNEMPLOYMENT-SCALE
+            ELSE
+                MOVE 0 TO WS-UNEMP-TARGET
+            END-IF
+            COMPUTE WS-UNEMPLOYMENT-PCT(WS-IDX) =
+                WS-UNEMPLOYMENT-PCT(WS-IDX)
+                + (WS-UNEMP-TARGET - WS-UNEMPLOYMENT-PCT(WS-IDX))
+                  / UNEMPLOYMENT-SMOOTHING
+            IF WS-UNEMPLOYMENT-PCT(WS-IDX) > 100
+                MOVE 100 TO WS-UNEMPLOYMENT-PCT(WS-IDX)
+            END-IF
+        END-IF
+    END-PERFORM.
+
+ACCUMULATE-TECH-BONUS.
+*> Phase 25 — tech-бонусы накопления, перенесены из PRODUCE-ALL.
+*> База — реализованная прибыль (при realize=1000 равна прибавочной стоимости,
+*> поэтому рефакторинг byte-identical).
+    IF WS-TECH-LEVEL(WS-IDX, 2) >= 2
+        COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+            + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR * 30 / 100
+    END-IF
+    IF WS-TECH-LEVEL(WS-IDX, 2) >= 3
+        EVALUATE WS-TECH-L3-CHOICE(WS-IDX, 2)
+            WHEN 1
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR * 20 / 100
+            WHEN 2
+                CONTINUE
+            WHEN 3
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR * 10 / 100
+        END-EVALUATE
+    END-IF
+    IF WS-TECH-LEVEL(WS-IDX, 2) >= 4
+        EVALUATE TRUE
+            WHEN WS-TECH-L3-CHOICE(WS-IDX, 2) = 1
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR * 10 / 100
+            WHEN WS-TECH-L3-CHOICE(WS-IDX, 2) = 3
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR * 10 / 100
+        END-EVALUATE
     END-IF.
 
 CLAMP-TENSION.
@@ -1151,6 +1235,14 @@ CONSCIOUSNESS-ALL.
                     PERFORM CONSCIOUSNESS-CONTAGION
                         VARYING WS-NIDX FROM 1 BY 1
                         UNTIL WS-NIDX > 3
+                END-IF
+            END-IF
+*>          Phase 25 — массовая безработица — школа классового сознания.
+            IF WS-UNEMPLOYMENT-PCT(WS-IDX) > UNEMPLOYMENT-CONSC-MIN
+               AND WS-WORKER-PCT >= CONSCIOUSNESS-URBAN-MIN
+                ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
+                IF WS-CONSCIOUSNESS(WS-IDX) > CONSCIOUSNESS-MAX
+                    MOVE CONSCIOUSNESS-MAX TO WS-CONSCIOUSNESS(WS-IDX)
                 END-IF
             END-IF
 *>          Decay — каждые N ходов −1 у всех ненулевых.
@@ -1946,6 +2038,8 @@ SPAWN-HEIR.
         MOVE 0                     TO WS-WAR-YEAR(WS-FOUND-SLOT)
         MOVE WS-WAR-PEACE          TO WS-WAR-TYPE(WS-FOUND-SLOT)
         MOVE 0                     TO WS-COLLAPSE-TIMER(WS-FOUND-SLOT)
+*>      Phase 25 — наследник стартует без безработицы.
+        MOVE 0                     TO WS-UNEMPLOYMENT-PCT(WS-FOUND-SLOT)
 *>      Сознание и культура: новое государство, начинает с малого.
 *>      Не наследует от родителя — это другой народ/династия.
         MOVE CONSCIOUSNESS-INIT    TO WS-CONSCIOUSNESS(WS-FOUND-SLOT)
@@ -2092,6 +2186,10 @@ SOCIAL-ALL.
                 WHEN 1 ADD FAMINE-MILD-TENSION   TO WS-TENSION-DELTA
                 WHEN 2 ADD FAMINE-SEVERE-TENSION TO WS-TENSION-DELTA
             END-EVALUATE
+
+*>          Phase 25 — безработица злит: резервная армия давит на настроения.
+            COMPUTE WS-TENSION-DELTA = WS-TENSION-DELTA
+                + WS-UNEMPLOYMENT-PCT(WS-IDX) / UNEMPLOYMENT-TENSION-WT
 
 *>          Шум tension: ±2 пункта в каждом ходу — индивидуальные настроения,
 *>          харизматичные смутьяны, слухи, культурные приливы.
@@ -2510,6 +2608,8 @@ ACCUMULATE-ALL.
                     MOVE 0                TO WS-WAR-YEAR(WS-IDX)
                     MOVE WS-WAR-PEACE     TO WS-WAR-TYPE(WS-IDX)
                     MOVE 0                TO WS-AT-WAR-WITH(WS-IDX)
+*>                  Phase 25 — возрождённая полития стартует без безработицы.
+                    MOVE 0                TO WS-UNEMPLOYMENT-PCT(WS-IDX)
                     MOVE CONSCIOUSNESS-INIT TO WS-CONSCIOUSNESS(WS-IDX)
 *>                  Phase 24 / Этап 2B: имя политии при REBIRTH сохраняется.
 *>                  Если это была стартовая полития (slot 1..10) — её
@@ -2649,8 +2749,12 @@ WRITE-WORLD.
             WS-CULT-MERC(WS-IDX)         DELIMITED SIZE
             WS-CULT-REL(WS-IDX)          DELIMITED SIZE
             WS-MODE-YEARS(WS-IDX)        DELIMITED SIZE
+            WS-UNEMPLOYMENT-PCT(WS-IDX)  DELIMITED SIZE
             INTO WS-OUT-LINE
         END-STRING
+        IF FUNCTION LENGTH(FUNCTION TRIM(WS-OUT-LINE TRAILING)) > 167
+            DISPLAY "WARN: polities.dat record drift > 167" UPON SYSERR
+        END-IF
         WRITE WS-POLITY-REC FROM WS-OUT-LINE
     END-PERFORM
     CLOSE POLITIES-FILE.
