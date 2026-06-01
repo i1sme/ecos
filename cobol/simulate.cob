@@ -2038,6 +2038,8 @@ SPAWN-HEIR.
         MOVE 0                     TO WS-WAR-YEAR(WS-FOUND-SLOT)
         MOVE WS-WAR-PEACE          TO WS-WAR-TYPE(WS-FOUND-SLOT)
         MOVE 0                     TO WS-COLLAPSE-TIMER(WS-FOUND-SLOT)
+*>      Phase 25 — наследник стартует без безработицы.
+        MOVE 0                     TO WS-UNEMPLOYMENT-PCT(WS-FOUND-SLOT)
 *>      Сознание и культура: новое государство, начинает с малого.
 *>      Не наследует от родителя — это другой народ/династия.
         MOVE CONSCIOUSNESS-INIT    TO WS-CONSCIOUSNESS(WS-FOUND-SLOT)
@@ -2606,6 +2608,8 @@ ACCUMULATE-ALL.
                     MOVE 0                TO WS-WAR-YEAR(WS-IDX)
                     MOVE WS-WAR-PEACE     TO WS-WAR-TYPE(WS-IDX)
                     MOVE 0                TO WS-AT-WAR-WITH(WS-IDX)
+*>                  Phase 25 — возрождённая полития стартует без безработицы.
+                    MOVE 0                TO WS-UNEMPLOYMENT-PCT(WS-IDX)
                     MOVE CONSCIOUSNESS-INIT TO WS-CONSCIOUSNESS(WS-IDX)
 *>                  Phase 24 / Этап 2B: имя политии при REBIRTH сохраняется.
 *>                  Если это была стартовая полития (slot 1..10) — её

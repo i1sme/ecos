@@ -2156,6 +2156,9 @@ Phase 16-17-18 — большой структурированный план �
 - Guard на дрейф формата polities.dat (COBOL WARN UPON SYSERR + Rust eprintln).
 - UI: безработица + индикатор реализации (supply/demand) в detail-панели, цвет
   BANKRUPTCY (LightRed) + в фильтре Politics.
+- Follow-up (финальное ревью): безработица сбрасывается в 0 при REBIRTH и
+  SPAWN-HEIR — была забыта в путях возрождения, наследованное значение давало
+  лишние каскадные банкротства у возрождённых политий (BANKRUPTCY 941→339).
 
 ### Какие файлы затронуты
 - `cobol/simulate.cob` — REALIZE-ALL, ACCUMULATE-TECH-BONUS, безработица в PRODUCE/
@@ -2174,9 +2177,9 @@ Phase 16-17-18 — большой структурированный план �
 - polities.dat: 164 → 167 байт (поле в конце, offset'ы стабильны)
 - T2 (поле) и T3 (рефакторинг REALIZE-ALL) — byte-identical против старого baseline
 - Новый baseline зафиксирован (старый устарел — поведение изменилось по построению)
-- Стресс-тест 1000 ходов (финал): BANKRUPTCY×941, CRISIS×616, FAMINE×251,
-  CLASS-WAR×176, MODE-SHIFT×18, REVOLUTION×14; живых политий 3; end-state:
-  27 EXTINCT, 2 FEUDAL, 1 COLLAPSED.
+- Стресс-тест 1000 ходов (финал, после фикса reset): BANKRUPTCY×339,
+  CLASS-WAR×278, FAMINE×253, CRISIS×234, MODE-SHIFT×19, REVOLUTION×23;
+  живых политий 3; end-state: 27 EXTINCT, 2 FEUDAL, 1 COLLAPSED.
 - Замечание по балансу: мир остаётся смертоносным (~27/30 EXTINCT к ходу 1000) —
   это наследие существующего баланса проекта (было ~25/30 ДО фазы), фаза добавила
   ~+2. Кандидат на будущий ребаланс порогов коллапса, вне скоупа этой фазы.
