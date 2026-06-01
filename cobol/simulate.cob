@@ -236,6 +236,8 @@ WORKING-STORAGE SECTION.
 78 BANKRUPTCY-CHRON-MIN      VALUE 1000.  *> мин. убыток для записи BANKRUPTCY
 78 UNEMPLOYMENT-SCALE        VALUE 20.   *> (1000−realize)/20 = target % безработицы
 78 UNEMPLOYMENT-SMOOTHING    VALUE 3.    *> инерция резервной армии
+78 UNEMPLOYMENT-TENSION-WT   VALUE 5.    *> делитель вклада безработицы в tension
+78 UNEMPLOYMENT-CONSC-MIN    VALUE 15.   *> порог безработицы для +1 сознание
 
 *> Распределение
 78 SUBSIST-PER-WORKER       VALUE 4.
@@ -1235,6 +1237,14 @@ CONSCIOUSNESS-ALL.
                         UNTIL WS-NIDX > 3
                 END-IF
             END-IF
+*>          Phase 25 — массовая безработица — школа классового сознания.
+            IF WS-UNEMPLOYMENT-PCT(WS-IDX) > UNEMPLOYMENT-CONSC-MIN
+               AND WS-WORKER-PCT >= CONSCIOUSNESS-URBAN-MIN
+                ADD 1 TO WS-CONSCIOUSNESS(WS-IDX)
+                IF WS-CONSCIOUSNESS(WS-IDX) > CONSCIOUSNESS-MAX
+                    MOVE CONSCIOUSNESS-MAX TO WS-CONSCIOUSNESS(WS-IDX)
+                END-IF
+            END-IF
 *>          Decay — каждые N ходов −1 у всех ненулевых.
 *>          Без active поддержки сознание угасает (период реакции,
 *>          смена поколений, забвение опыта борьбы).
@@ -2174,6 +2184,10 @@ SOCIAL-ALL.
                 WHEN 1 ADD FAMINE-MILD-TENSION   TO WS-TENSION-DELTA
                 WHEN 2 ADD FAMINE-SEVERE-TENSION TO WS-TENSION-DELTA
             END-EVALUATE
+
+*>          Phase 25 — безработица злит: резервная армия давит на настроения.
+            COMPUTE WS-TENSION-DELTA = WS-TENSION-DELTA
+                + WS-UNEMPLOYMENT-PCT(WS-IDX) / UNEMPLOYMENT-TENSION-WT
 
 *>          Шум tension: ±2 пункта в каждом ходу — индивидуальные настроения,
 *>          харизматичные смутьяны, слухи, культурные приливы.
