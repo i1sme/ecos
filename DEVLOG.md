@@ -2139,3 +2139,47 @@ Phase 16-17-18 — большой структурированный план �
 - Региональная история ([H] полная страница)
 - ASCII-карта мира
 - Player agency (если когда-нибудь)
+
+## [Phase 25 — Кризис → разорение (реализация стоимости)] 2026-06-01
+
+### Что сделано
+- Новый параграф REALIZE-ALL: реализованная стоимость = output × (цена/базовая).
+  Накопление капитала и wage вынесены из PRODUCE-ALL (производство и реализация
+  разделены, как у Маркса). Рефакторинг был byte-identical (realize=1000), затем
+  включена реальная цена.
+- Обвал цены ниже издержек рабочей силы списывает капитал (банкротство, событие
+  BANKRUPTCY).
+- Новое поле WS-UNEMPLOYMENT-PCT (резервная армия труда): растёт при
+  недореализации, рассасывается при подъёме, снижает эффективный труд → output.
+- Обнищание (безработица) поднимает напряжение (SOCIAL-ALL) и классовое сознание
+  (CONSCIOUSNESS-ALL).
+- Guard на дрейф формата polities.dat (COBOL WARN UPON SYSERR + Rust eprintln).
+- UI: безработица + индикатор реализации (supply/demand) в detail-панели, цвет
+  BANKRUPTCY (LightRed) + в фильтре Politics.
+
+### Какие файлы затронуты
+- `cobol/simulate.cob` — REALIZE-ALL, ACCUMULATE-TECH-BONUS, безработица в PRODUCE/
+  REALIZE, члены в SOCIAL/CONSCIOUSNESS, константы, формат-guard, parse/write поля
+- `cobol/world.cob` — поле UNEMPLOYMENT, init, запись
+- `src/world.rs` — Polity.unemployment_pct, parse @164, length-warning
+- `src/saves.rs` — миграция legacy + ассерт 167 байт
+- `src/ui.rs` — безработица, реализация, цвет BANKRUPTCY
+- `scripts/stress.sh` — новый инструмент стресс-теста
+
+### Результат компиляции
+- COBOL: OK
+- Rust: OK (cargo test legacy_migration — ok)
+
+### Регрессия и баланс
+- polities.dat: 164 → 167 байт (поле в конце, offset'ы стабильны)
+- T2 (поле) и T3 (рефакторинг REALIZE-ALL) — byte-identical против старого baseline
+- Новый baseline зафиксирован (старый устарел — поведение изменилось по построению)
+- Стресс-тест 1000 ходов (финал): BANKRUPTCY×941, CRISIS×616, FAMINE×251,
+  CLASS-WAR×176, MODE-SHIFT×18, REVOLUTION×14; живых политий 3; end-state:
+  27 EXTINCT, 2 FEUDAL, 1 COLLAPSED.
+- Замечание по балансу: мир остаётся смертоносным (~27/30 EXTINCT к ходу 1000) —
+  это наследие существующего баланса проекта (было ~25/30 ДО фазы), фаза добавила
+  ~+2. Кандидат на будущий ребаланс порогов коллапса, вне скоупа этой фазы.
+
+### Что дальше
+- Phase 26 (следующая): структурный c/v и тенденция нормы прибыли к понижению (TRPF)
