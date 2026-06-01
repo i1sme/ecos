@@ -230,6 +230,8 @@ WORKING-STORAGE SECTION.
 78 CLERGY-PACIFY-DIVISOR    VALUE 3.
 78 MERCHANT-PACIFY-DIVISOR  VALUE 5.
 78 CAPITAL-ACC-DIVISOR      VALUE 10.
+*> Phase 25 — обесценивание капитала при нереализации
+78 CRISIS-WRITEDOWN-DIVISOR  VALUE 5.
 
 *> Распределение
 78 SUBSIST-PER-WORKER       VALUE 4.
@@ -426,6 +428,12 @@ WORKING-STORAGE SECTION.
 *> Signed temps для арифметики
 01 WS-OUTPUT-VAL      PIC S9(12)V99.
 01 WS-SURPLUS-VAL     PIC S9(12)V99.
+*> Phase 25 — реализация стоимости
+01 WS-REALIZE-PERMIL    PIC S9(5).
+01 WS-REALIZED-OUTPUT   PIC S9(12)V99.
+01 WS-REALIZED-PROFIT   PIC S9(12)V99.
+01 WS-WAGE-COST         PIC S9(12)V99.
+01 WS-LOSS              PIC S9(12)V99.
 01 WS-NB-EXPORT       PIC S9(12)V99.
 
 01 WS-OUT-LINE        PIC X(204).
@@ -652,6 +660,7 @@ MAIN-PARA.
     PERFORM CHECK-CRISIS
     PERFORM PROPAGATE-CRISIS
     PERFORM WRITE-MARKET
+    PERFORM REALIZE-ALL
     PERFORM TRADE-ALL
     PERFORM WAR-CHECK-ALL
     PERFORM WAR-RESOLVE-ALL
@@ -959,49 +968,6 @@ PRODUCE-ALL.
                 END-EVALUATE
             END-IF
             MOVE WS-OUTPUT-VAL TO WS-OUTPUT-VALUE(WS-IDX)
-*>          Прибавочная стоимость: изъятие правящим классом
-            COMPUTE WS-SURPLUS-VAL = WS-OUTPUT-VAL
-                                   * WS-SURPLUS-RATE(WS-IDX) / 100
-*>          1/CAPITAL-ACC-DIVISOR прибавочной стоимости → накопление капитала
-            COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
-                + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR
-*>          Phase 13: Banking (ORG L2) ×1.3.
-*>          Phase 17: ORG L3 расходится — Joint-Stock дальше ускоряет accum,
-*>          Cooperatives стабилизирует tension, Cartels работает через trade.
-            IF WS-TECH-LEVEL(WS-IDX, 2) >= 2
-                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
-                    + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR * 30 / 100
-            END-IF
-            IF WS-TECH-LEVEL(WS-IDX, 2) >= 3
-                EVALUATE WS-TECH-L3-CHOICE(WS-IDX, 2)
-                    WHEN 1
-                        COMPUTE WS-CAPITAL-STOCK(WS-IDX) =
-                            WS-CAPITAL-STOCK(WS-IDX)
-                            + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR * 20 / 100
-                    WHEN 2
-                        CONTINUE
-                    WHEN 3
-                        COMPUTE WS-CAPITAL-STOCK(WS-IDX) =
-                            WS-CAPITAL-STOCK(WS-IDX)
-                            + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR * 10 / 100
-                END-EVALUATE
-            END-IF
-*>          Phase 18 ORG L4: StockMkt/LimLiab/Trusts/VertInt — каждый +10% к accum.
-*>          MutAid/WorkOwn → эффект на tension в SOCIAL-ALL.
-            IF WS-TECH-LEVEL(WS-IDX, 2) >= 4
-                EVALUATE TRUE
-                    WHEN WS-TECH-L3-CHOICE(WS-IDX, 2) = 1
-                        COMPUTE WS-CAPITAL-STOCK(WS-IDX) =
-                            WS-CAPITAL-STOCK(WS-IDX)
-                            + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR * 10 / 100
-                    WHEN WS-TECH-L3-CHOICE(WS-IDX, 2) = 3
-                        COMPUTE WS-CAPITAL-STOCK(WS-IDX) =
-                            WS-CAPITAL-STOCK(WS-IDX)
-                            + WS-SURPLUS-VAL / CAPITAL-ACC-DIVISOR * 10 / 100
-                END-EVALUATE
-            END-IF
-*>          Зарплатный фонд = output − surplus (воспроизводство рабочей силы)
-            COMPUTE WS-WAGE-FUND(WS-IDX) = WS-OUTPUT-VAL - WS-SURPLUS-VAL
         ELSE
             MOVE 0 TO WS-OUTPUT-VALUE(WS-IDX)
             MOVE 0 TO WS-WAGE-FUND(WS-IDX)
@@ -1076,6 +1042,69 @@ CLAMP-PRICE.
     END-IF
     IF WS-MKT-PRICE(WS-MIDX) > WS-MKT-DFLT(WS-MIDX) * 3
         COMPUTE WS-MKT-PRICE(WS-MIDX) = WS-MKT-DFLT(WS-MIDX) * 3
+    END-IF.
+
+REALIZE-ALL.
+*> Phase 25 — реализация стоимости. На под-шаге рефакторинга realize=1000
+*> (полная реализация) → поведение идентично прежнему PRODUCE-ALL.
+*> Реальная цена подключается в следующей задаче.
+    PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > REGION-COUNT
+        IF NOT POLITY-DORMANT(WS-IDX)
+            MOVE 1000 TO WS-REALIZE-PERMIL
+            COMPUTE WS-REALIZED-OUTPUT =
+                WS-OUTPUT-VALUE(WS-IDX) * WS-REALIZE-PERMIL / 1000
+            COMPUTE WS-SURPLUS-VAL =
+                WS-OUTPUT-VALUE(WS-IDX) * WS-SURPLUS-RATE(WS-IDX) / 100
+            COMPUTE WS-WAGE-COST =
+                WS-OUTPUT-VALUE(WS-IDX) - WS-SURPLUS-VAL
+            COMPUTE WS-REALIZED-PROFIT =
+                WS-REALIZED-OUTPUT - WS-WAGE-COST
+            IF WS-REALIZED-PROFIT >= 0
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR
+                PERFORM ACCUMULATE-TECH-BONUS
+                MOVE WS-WAGE-COST TO WS-WAGE-FUND(WS-IDX)
+            ELSE
+                COMPUTE WS-LOSS = WS-WAGE-COST - WS-REALIZED-OUTPUT
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    - WS-LOSS / CRISIS-WRITEDOWN-DIVISOR
+                IF WS-CAPITAL-STOCK(WS-IDX) < 0
+                    MOVE 0 TO WS-CAPITAL-STOCK(WS-IDX)
+                END-IF
+                MOVE WS-REALIZED-OUTPUT TO WS-WAGE-FUND(WS-IDX)
+            END-IF
+        END-IF
+    END-PERFORM.
+
+ACCUMULATE-TECH-BONUS.
+*> Phase 25 — tech-бонусы накопления, перенесены из PRODUCE-ALL.
+*> База — реализованная прибыль (при realize=1000 равна прибавочной стоимости,
+*> поэтому рефакторинг byte-identical).
+    IF WS-TECH-LEVEL(WS-IDX, 2) >= 2
+        COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+            + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR * 30 / 100
+    END-IF
+    IF WS-TECH-LEVEL(WS-IDX, 2) >= 3
+        EVALUATE WS-TECH-L3-CHOICE(WS-IDX, 2)
+            WHEN 1
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR * 20 / 100
+            WHEN 2
+                CONTINUE
+            WHEN 3
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR * 10 / 100
+        END-EVALUATE
+    END-IF
+    IF WS-TECH-LEVEL(WS-IDX, 2) >= 4
+        EVALUATE TRUE
+            WHEN WS-TECH-L3-CHOICE(WS-IDX, 2) = 1
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR * 10 / 100
+            WHEN WS-TECH-L3-CHOICE(WS-IDX, 2) = 3
+                COMPUTE WS-CAPITAL-STOCK(WS-IDX) = WS-CAPITAL-STOCK(WS-IDX)
+                    + WS-REALIZED-PROFIT / CAPITAL-ACC-DIVISOR * 10 / 100
+        END-EVALUATE
     END-IF.
 
 CLAMP-TENSION.
