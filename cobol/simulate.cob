@@ -521,6 +521,8 @@ WORKING-STORAGE SECTION.
 *> Сбрасывается на 0 при каждом mode-shift, COLLAPSE, REBIRTH.
 *> Используется как минимальная «выдержка» эпохи перед возможностью перехода.
    05 WS-MODE-YEARS        PIC 9(4).
+*> Phase 25 — резервная армия труда (доля безработных, 0..100).
+   05 WS-UNEMPLOYMENT-PCT  PIC 9(3).
 
 *> Пул имён правителей и трейтов (общий с world.cob)
 01 WS-NAME-POOL.
@@ -855,7 +857,8 @@ PARSE-POLITY-RECORD.
 *>    CULT-MIL       @ 152 len 3
 *>    CULT-MERC      @ 155 len 3
 *>    CULT-REL       @ 158 len 3
-*>    MODE-YEARS     @ 161 len 4   = 164 байт (запись)
+*>    MODE-YEARS     @ 161 len 4
+*>    UNEMPLOYMENT    @ 165 len 3   = 167 байт (запись)
     MOVE WS-POLITY-REC(1:20)                   TO WS-POLITY-NAME(WS-IDX)
     MOVE FUNCTION NUMVAL(WS-POLITY-REC(21:2))  TO WS-REGION-ID(WS-IDX)
     MOVE FUNCTION NUMVAL(WS-POLITY-REC(23:8))  TO WS-POPULATION(WS-IDX)
@@ -884,7 +887,8 @@ PARSE-POLITY-RECORD.
     MOVE FUNCTION NUMVAL(WS-POLITY-REC(152:3)) TO WS-CULT-MIL(WS-IDX)
     MOVE FUNCTION NUMVAL(WS-POLITY-REC(155:3)) TO WS-CULT-MERC(WS-IDX)
     MOVE FUNCTION NUMVAL(WS-POLITY-REC(158:3)) TO WS-CULT-REL(WS-IDX)
-    MOVE FUNCTION NUMVAL(WS-POLITY-REC(161:4)) TO WS-MODE-YEARS(WS-IDX).
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(161:4)) TO WS-MODE-YEARS(WS-IDX)
+    MOVE FUNCTION NUMVAL(WS-POLITY-REC(165:3)) TO WS-UNEMPLOYMENT-PCT(WS-IDX).
 
     MOVE 0         TO WS-OUTPUT-VALUE(WS-IDX)
     MOVE 0         TO WS-WAGE-FUND(WS-IDX)
@@ -2649,6 +2653,7 @@ WRITE-WORLD.
             WS-CULT-MERC(WS-IDX)         DELIMITED SIZE
             WS-CULT-REL(WS-IDX)          DELIMITED SIZE
             WS-MODE-YEARS(WS-IDX)        DELIMITED SIZE
+            WS-UNEMPLOYMENT-PCT(WS-IDX)  DELIMITED SIZE
             INTO WS-OUT-LINE
         END-STRING
         WRITE WS-POLITY-REC FROM WS-OUT-LINE

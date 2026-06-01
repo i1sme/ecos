@@ -53,6 +53,7 @@
 // | culture_merc   | 154   |   3   |
 // | culture_rel    | 157   |   3   |
 // | mode_years     | 160   |   4   |
+// | unemployment_pct | 164 |   3   |
 
 #[derive(Debug, Clone)]
 pub struct Region {
@@ -95,6 +96,8 @@ pub struct Polity {
     pub culture_merc: u8,
     pub culture_rel: u8,
     pub mode_years: u16,
+    /// Phase 25 — доля безработных (резервная армия труда), 0..100.
+    pub unemployment_pct: u8,
 }
 
 /// Связка геофона и политического слоя.
@@ -197,6 +200,7 @@ pub fn parse_polities(path: &str) -> Vec<Polity> {
             culture_merc:      parse_u64(slice_or_blank(line, 154, 3)) as u8,
             culture_rel:       parse_u64(slice_or_blank(line, 157, 3)) as u8,
             mode_years:        parse_u64(slice_or_blank(line, 160, 4)) as u16,
+            unemployment_pct:  parse_u64(slice_or_blank(line, 164, 3)) as u8,
         })
         .collect()
 }

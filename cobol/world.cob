@@ -70,6 +70,8 @@ WORKING-STORAGE SECTION.
    05 WS-CULT-REL          PIC 9(3).
 *> Phase 21 — счётчик лет в эпохе (стартуем с 0)
    05 WS-MODE-YEARS        PIC 9(4).
+*> Phase 25 — резервная армия труда (доля безработных, 0..100).
+   05 WS-UNEMPLOYMENT-PCT  PIC 9(3).
 
 *> Пул имён правителей (20 фэнтезийных). Используется при генерации/наследовании.
 01 WS-NAME-POOL.
@@ -358,7 +360,9 @@ INIT-REGION.
 *>  WS-POLITY-NAME будет отличаться от WS-NAME.
     MOVE WS-NAME(WS-IDX)     TO WS-POLITY-NAME(WS-IDX)
 *>  Phase 24 / Этап 2B: на старте polity[i] живёт в region[i] (1:1).
-    MOVE WS-IDX              TO WS-REGION-ID(WS-IDX).
+    MOVE WS-IDX              TO WS-REGION-ID(WS-IDX)
+*>  Phase 25 — стартовая безработица отсутствует.
+    MOVE 0                  TO WS-UNEMPLOYMENT-PCT(WS-IDX).
 
 INIT-EXTINCT-SLOT.
 *>  Phase 24 / Этап 2B — резервный слот политии (11..30).
@@ -390,7 +394,8 @@ INIT-EXTINCT-SLOT.
     MOVE 0                   TO WS-CULT-MIL(WS-IDX)
     MOVE 0                   TO WS-CULT-MERC(WS-IDX)
     MOVE 0                   TO WS-CULT-REL(WS-IDX)
-    MOVE 0                   TO WS-MODE-YEARS(WS-IDX).
+    MOVE 0                   TO WS-MODE-YEARS(WS-IDX)
+    MOVE 0                   TO WS-UNEMPLOYMENT-PCT(WS-IDX).
 
 ASSIGN-NEIGHBORS.
 *> Фиксированная топология: кольцо + диагональные связи.
@@ -503,6 +508,7 @@ WRITE-POLITY-ROW.
         WS-CULT-MERC(WS-IDX)        DELIMITED SIZE
         WS-CULT-REL(WS-IDX)         DELIMITED SIZE
         WS-MODE-YEARS(WS-IDX)       DELIMITED SIZE
+        WS-UNEMPLOYMENT-PCT(WS-IDX) DELIMITED SIZE
         INTO WS-OUT-LINE
     END-STRING
 
